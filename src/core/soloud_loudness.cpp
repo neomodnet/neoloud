@@ -26,6 +26,7 @@ freely, subject to the following restrictions:
 #include "soloud_audiosource.h"
 #include "soloud_error.h"
 #include "soloud_loudness.h"
+#include "soloud_loudness_internal.h"
 
 #include <cmath>
 #include <memory>
@@ -50,23 +51,13 @@ constexpr double RELATIVE_GATE_OFFSET = -10.0; // relative gate is mean loudness
 constexpr double LOUDNESS_OFFSET = -0.691;     // constant offset in LUFS formula
 
 // BS.1770-4 channel weights
-constexpr double WEIGHT_FRONT = 1.0;     // L, R, C
-constexpr double WEIGHT_SURROUND = 1.41; // Ls, Rs (approx. +1.5 dB)
-constexpr double WEIGHT_LFE = 0.0;       // LFE excluded from measurement
+constexpr float WEIGHT_FRONT = 1.0f;     // L, R, C
+constexpr float WEIGHT_SURROUND = 1.41f; // Ls, Rs (approx. +1.5 dB)
+constexpr float WEIGHT_LFE = 0.0f;       // LFE excluded from measurement
 
-struct BiquadCoeffs
+inline float biquadProcess(const BiquadCoeffs &c, BiquadState &s, float x)
 {
-	double b0, b1, b2, a1, a2; // a0 normalized to 1.0
-};
-
-struct BiquadState
-{
-	double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
-};
-
-inline double biquadProcess(const BiquadCoeffs &c, BiquadState &s, double x)
-{
-	double y = c.b0 * x + c.b1 * s.x1 + c.b2 * s.x2 - c.a1 * s.y1 - c.a2 * s.y2;
+	float y = c.b0 * x + c.b1 * s.x1 + c.b2 * s.x2 - c.a1 * s.y1 - c.a2 * s.y2;
 	s.x2 = s.x1;
 	s.x1 = x;
 	s.y2 = s.y1;
@@ -75,6 +66,7 @@ inline double biquadProcess(const BiquadCoeffs &c, BiquadState &s, double x)
 }
 
 // K-weighting pre-filter: high shelf modeling head-related acoustic effects
+// Coefficients computed in double, then narrowed to float for runtime use.
 BiquadCoeffs computePreFilterCoeffs(double sampleRate)
 {
 	double A = std::pow(10.0, PRE_FILTER_GAIN_DB / 40.0); // sqrt of linear gain
@@ -91,7 +83,7 @@ BiquadCoeffs computePreFilterCoeffs(double sampleRate)
 	double b1 = -2.0 * A * ((A - 1.0) + (A + 1.0) * cosw0);
 	double b2 = A * ((A + 1.0) + (A - 1.0) * cosw0 - 2.0 * sqrtA * alpha);
 
-	return {.b0 = b0 / a0, .b1 = b1 / a0, .b2 = b2 / a0, .a1 = a1 / a0, .a2 = a2 / a0};
+	return {.b0 = (float)(b0 / a0), .b1 = (float)(b1 / a0), .b2 = (float)(b2 / a0), .a1 = (float)(a1 / a0), .a2 = (float)(a2 / a0)};
 }
 
 // K-weighting RLB filter: high pass for revised low-frequency B-curve
@@ -109,12 +101,12 @@ BiquadCoeffs computeRLBCoeffs(double sampleRate)
 	double b1 = -(1.0 + cosw0);
 	double b2 = (1.0 + cosw0) / 2.0;
 
-	return {.b0 = b0 / a0, .b1 = b1 / a0, .b2 = b2 / a0, .a1 = a1 / a0, .a2 = a2 / a0};
+	return {.b0 = (float)(b0 / a0), .b1 = (float)(b1 / a0), .b2 = (float)(b2 / a0), .a1 = (float)(a1 / a0), .a2 = (float)(a2 / a0)};
 }
 
 // Channel weights per ITU-R BS.1770-4
 // Returns 0.0 for channels to exclude (e.g. LFE)
-double channelWeight(unsigned int aChannel, unsigned int aChannelCount)
+float channelWeight(unsigned int aChannel, unsigned int aChannelCount)
 {
 	switch (aChannelCount)
 	{
@@ -144,6 +136,23 @@ double channelWeight(unsigned int aChannel, unsigned int aChannelCount)
 }
 } // namespace
 
+void kWeightChunkScalar(const BiquadCoeffs &aPreCoeffs, const BiquadCoeffs &aRlbCoeffs, BiquadState *aPreState, BiquadState *aRlbState, const float *aBuffer,
+                        unsigned int aSamplesRead, unsigned int aBufStride, unsigned int aChannels, float *aOut)
+{
+	for (unsigned int ch = 0; ch < aChannels; ch++)
+	{
+		const float *src = aBuffer + ch * aBufStride;
+		float *dst = aOut + ch * aBufStride;
+		for (unsigned int i = 0; i < aSamplesRead; i++)
+		{
+			float sample = src[i];
+			sample = biquadProcess(aPreCoeffs, aPreState[ch], sample);
+			sample = biquadProcess(aRlbCoeffs, aRlbState[ch], sample);
+			dst[i] = sample;
+		}
+	}
+}
+
 result integratedLoudness(AudioSource &aSource, float &aLoudness)
 {
 	std::unique_ptr<AudioSourceInstance> instance{aSource.createInstance()};
@@ -157,73 +166,106 @@ result integratedLoudness(AudioSource &aSource, float &aLoudness)
 	unsigned int channels = instance->mChannels;
 	float sampleRate = instance->mBaseSamplerate;
 
-	if (channels == 0 || sampleRate <= 0.0f)
+	if (channels == 0 || channels > MAX_CHANNELS || sampleRate <= 0.0f)
 		return INVALID_PARAMETER;
 
-	// K-weighting filter coefficients and state
+	// select K-weighting function: SSE2 for 2+ channels, scalar otherwise
+	KWeightChunkFn kWeightChunk = kWeightChunkScalar;
+#if defined(SOLOUD_SUPPORT_SSE2)
+	if (channels >= 2 && (detectCPUextensions() & CPUFEATURE_SSE2))
+		kWeightChunk = kWeightChunkSSE;
+#endif
+
+	// K-weighting filter coefficients and per-channel state
 	BiquadCoeffs preCoeffs = computePreFilterCoeffs(sampleRate);
 	BiquadCoeffs rlbCoeffs = computeRLBCoeffs(sampleRate);
 
-	std::vector<BiquadState> preState(channels);
-	std::vector<BiquadState> rlbState(channels);
+	BiquadState preState[MAX_CHANNELS]{};
+	BiquadState rlbState[MAX_CHANNELS]{};
 
-	// Block parameters
-	unsigned int blockSize = (unsigned int)(sampleRate * BLOCK_DURATION);
+	// Step-based block parameters: 4 steps per block (400ms block, 100ms step)
+	constexpr unsigned int STEPS_PER_BLOCK = 4;
 	unsigned int stepSize = (unsigned int)(sampleRate * BLOCK_OVERLAP_STEP);
 
-	if (blockSize == 0 || stepSize == 0)
+	if (stepSize == 0)
 		return INVALID_PARAMETER;
 
+	unsigned int blockSize = STEPS_PER_BLOCK * stepSize;
+
 	// Channel weights
-	std::vector<double> weights(channels);
+	float weights[MAX_CHANNELS];
 	for (unsigned int ch = 0; ch < channels; ch++)
 		weights[ch] = channelWeight(ch, channels);
 
-	// Ring buffer for K-weighted samples (we need blockSize samples to compute a block)
-	std::vector<std::vector<double>> kWeighted(channels, std::vector<double>(blockSize, 0.0));
-	unsigned int ringPos = 0;
+	// Step-based accumulation: current step sum-of-squares and ring of completed step sums
+	double stepSumSq[MAX_CHANNELS]{};
+	double stepSums[STEPS_PER_BLOCK][MAX_CHANNELS]{};
+	unsigned int stepPos = 0;        // samples processed in current step
+	unsigned int completedSteps = 0; // total steps completed
+	unsigned int stepRingPos = 0;    // position in stepSums ring
 	unsigned int totalSamples = 0;
 
-	// Store per-block per-channel mean square values for gating
-	std::vector<std::vector<double>> blockMeanSq; // [block][channel]
+	// Per-block per-channel mean square for gating. Flat layout: [block * channels + ch]
+	std::vector<float> blockMeanSq;
 
 	// Read audio in SAMPLE_GRANULARITY chunks
-	unsigned int bufSize = SAMPLE_GRANULARITY;
-	std::vector<float> buffer((size_t)bufSize * channels, 0.0f);
+	float buffer[SAMPLE_GRANULARITY * MAX_CHANNELS];
+	float kWeightedChunk[MAX_CHANNELS * SAMPLE_GRANULARITY];
 
 	for (;;)
 	{
-		unsigned int samplesRead = instance->getAudio(buffer.data(), bufSize, bufSize);
+		unsigned int samplesRead = instance->getAudio(buffer, SAMPLE_GRANULARITY, SAMPLE_GRANULARITY);
 		if (samplesRead == 0 && instance->hasEnded())
 			break;
 
-		for (unsigned int i = 0; i < samplesRead; i++)
+		// pass 1: K-weight the entire chunk
+		kWeightChunk(preCoeffs, rlbCoeffs, preState, rlbState, buffer, samplesRead, SAMPLE_GRANULARITY, channels, kWeightedChunk);
+
+		// pass 2: square-and-accumulate with step boundary tracking
+		unsigned int processed = 0;
+		while (processed < samplesRead)
 		{
+			unsigned int n = samplesRead - processed;
+			unsigned int remaining = stepSize - stepPos;
+			if (n > remaining)
+				n = remaining;
+
 			for (unsigned int ch = 0; ch < channels; ch++)
 			{
-				double sample = (double)buffer[ch * bufSize + i];
-
-				// apply K-weighting: pre-filter then RLB
-				sample = biquadProcess(preCoeffs, preState[ch], sample);
-				sample = biquadProcess(rlbCoeffs, rlbState[ch], sample);
-
-				kWeighted[ch][ringPos] = sample;
+				const float *src = kWeightedChunk + ch * SAMPLE_GRANULARITY + processed;
+				double acc = 0.0;
+				for (unsigned int i = 0; i < n; i++)
+					acc += (double)src[i] * src[i];
+				stepSumSq[ch] += acc;
 			}
-			ringPos = (ringPos + 1) % blockSize;
-			totalSamples++;
 
-			// emit a block every stepSize samples, once we have at least blockSize
-			if (totalSamples >= blockSize && ((totalSamples - blockSize) % stepSize == 0))
+			stepPos += n;
+			processed += n;
+			totalSamples += n;
+
+			if (stepPos >= stepSize)
 			{
-				std::vector<double> meanSq(channels, 0.0);
+				// step complete: store into ring
 				for (unsigned int ch = 0; ch < channels; ch++)
 				{
-					double sum = 0.0;
-					for (unsigned int j = 0; j < blockSize; j++)
-						sum += kWeighted[ch][j] * kWeighted[ch][j];
-					meanSq[ch] = sum / blockSize;
+					stepSums[stepRingPos][ch] = stepSumSq[ch];
+					stepSumSq[ch] = 0.0;
 				}
-				blockMeanSq.push_back(std::move(meanSq));
+				stepRingPos = (stepRingPos + 1) % STEPS_PER_BLOCK;
+				stepPos = 0;
+				completedSteps++;
+
+				// emit a block once we have enough steps
+				if (completedSteps >= STEPS_PER_BLOCK)
+				{
+					for (unsigned int ch = 0; ch < channels; ch++)
+					{
+						double sum = 0.0;
+						for (unsigned int s = 0; s < STEPS_PER_BLOCK; s++)
+							sum += stepSums[s][ch];
+						blockMeanSq.push_back((float)(sum / blockSize));
+					}
+				}
 			}
 		}
 
@@ -231,39 +273,40 @@ result integratedLoudness(AudioSource &aSource, float &aLoudness)
 			break;
 	}
 
-	// Handle short audio (< 400ms): use all available samples as one block
-	if (blockMeanSq.empty() && totalSamples > 0)
+	size_t numBlocks = blockMeanSq.size() / channels;
+
+	// Handle short audio (< one full block): use all available samples
+	if (numBlocks == 0 && totalSamples > 0)
 	{
-		std::vector<double> meanSq(channels, 0.0);
+		// sum all completed step sums + partial current step
 		for (unsigned int ch = 0; ch < channels; ch++)
 		{
-			double sum = 0.0;
-			for (unsigned int j = 0; j < totalSamples; j++)
-				sum += kWeighted[ch][j] * kWeighted[ch][j];
-			meanSq[ch] = sum / totalSamples;
+			double sum = stepSumSq[ch];
+			for (unsigned int s = 0; s < completedSteps && s < STEPS_PER_BLOCK; s++)
+				sum += stepSums[s][ch];
+			blockMeanSq.push_back((float)(sum / totalSamples));
 		}
-		blockMeanSq.push_back(std::move(meanSq));
+		numBlocks = 1;
 	}
 
-	if (blockMeanSq.empty())
+	if (numBlocks == 0)
 	{
 		aLoudness = (float)-HUGE_VAL;
 		return SO_NO_ERROR;
 	}
 
 	// Compute per-block loudness and apply absolute gate
-	size_t numBlocks = blockMeanSq.size();
 	std::vector<double> blockLoudness(numBlocks);
 
 	// Pass 1: absolute gate
 	unsigned int countAbove = 0;
-	std::vector<double> chanSumAbs(channels, 0.0);
+	double chanSumAbs[MAX_CHANNELS]{};
 
 	for (size_t b = 0; b < numBlocks; b++)
 	{
 		double weightedSum = 0.0;
 		for (unsigned int ch = 0; ch < channels; ch++)
-			weightedSum += weights[ch] * blockMeanSq[b][ch];
+			weightedSum += weights[ch] * blockMeanSq[b * channels + ch];
 
 		if (weightedSum <= 0.0)
 		{
@@ -276,7 +319,7 @@ result integratedLoudness(AudioSource &aSource, float &aLoudness)
 		if (blockLoudness[b] >= ABSOLUTE_GATE_LUFS)
 		{
 			for (unsigned int ch = 0; ch < channels; ch++)
-				chanSumAbs[ch] += blockMeanSq[b][ch];
+				chanSumAbs[ch] += blockMeanSq[b * channels + ch];
 			countAbove++;
 		}
 	}
@@ -296,7 +339,7 @@ result integratedLoudness(AudioSource &aSource, float &aLoudness)
 	double relativeThreshold = gammaA + RELATIVE_GATE_OFFSET;
 
 	// Pass 2: relative gate
-	std::vector<double> chanSumRel(channels, 0.0);
+	double chanSumRel[MAX_CHANNELS]{};
 	unsigned int countRel = 0;
 
 	for (size_t b = 0; b < numBlocks; b++)
@@ -304,7 +347,7 @@ result integratedLoudness(AudioSource &aSource, float &aLoudness)
 		if (blockLoudness[b] >= ABSOLUTE_GATE_LUFS && blockLoudness[b] >= relativeThreshold)
 		{
 			for (unsigned int ch = 0; ch < channels; ch++)
-				chanSumRel[ch] += blockMeanSq[b][ch];
+				chanSumRel[ch] += blockMeanSq[b * channels + ch];
 			countRel++;
 		}
 	}

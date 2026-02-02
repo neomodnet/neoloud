@@ -74,6 +74,7 @@ file(GLOB_RECURSE SOLOUD_FILTER_SOURCES "src/filter/*.cpp")
 set(SOLOUD_SSE_SOURCES
     src/intrin/sse/soloud_mixing_sse.cpp
     src/intrin/sse/soloud_misc_sse.cpp
+    src/intrin/sse/soloud_loudness_sse.cpp
 )
 set(SOLOUD_AVX_SOURCES
     src/intrin/avx/soloud_mixing_avx.cpp

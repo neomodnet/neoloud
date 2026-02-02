@@ -221,5 +221,6 @@ void testLoudness();
 void testRelativePlaySpeedTiming();
 void testMixer();
 void testSpeedThings();
+void benchLoudness();
 
 // NOLINTEND(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)

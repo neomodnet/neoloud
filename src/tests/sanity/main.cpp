@@ -208,18 +208,19 @@ struct TestEntry
 } // namespace
 
 static const TestEntry gTestTable[] = {
-    {.name = "misc",     .func = testMisc,                    .isBench = false, .usesLastKnown = false},
-    {.name = "getters",  .func = testGetters,                 .isBench = false, .usesLastKnown = false},
-    {.name = "vis",      .func = testVis,                     .isBench = false, .usesLastKnown = false},
-    {.name = "timing",   .func = testRelativePlaySpeedTiming, .isBench = false, .usesLastKnown = false},
-    {.name = "play",     .func = testPlay,                    .isBench = false, .usesLastKnown = true },
-    {.name = "3d",       .func = test3d,                      .isBench = false, .usesLastKnown = true },
-    {.name = "filters",  .func = testFilters,                 .isBench = false, .usesLastKnown = true },
-    {.name = "core",     .func = testCore,                    .isBench = false, .usesLastKnown = true },
-    {.name = "speech",   .func = testSpeech,                  .isBench = false, .usesLastKnown = true },
-    {.name = "loudness", .func = testLoudness,                .isBench = false, .usesLastKnown = false},
-    {.name = "mixer",    .func = testMixer,                   .isBench = false, .usesLastKnown = false},
-    {.name = "bench",    .func = testSpeedThings,             .isBench = true,  .usesLastKnown = false},
+    {.name = "misc",           .func = testMisc,                    .isBench = false, .usesLastKnown = false},
+    {.name = "getters",        .func = testGetters,                 .isBench = false, .usesLastKnown = false},
+    {.name = "vis",            .func = testVis,                     .isBench = false, .usesLastKnown = false},
+    {.name = "timing",         .func = testRelativePlaySpeedTiming, .isBench = false, .usesLastKnown = false},
+    {.name = "play",           .func = testPlay,                    .isBench = false, .usesLastKnown = true },
+    {.name = "3d",             .func = test3d,                      .isBench = false, .usesLastKnown = true },
+    {.name = "filters",        .func = testFilters,                 .isBench = false, .usesLastKnown = true },
+    {.name = "core",           .func = testCore,                    .isBench = false, .usesLastKnown = true },
+    {.name = "speech",         .func = testSpeech,                  .isBench = false, .usesLastKnown = true },
+    {.name = "loudness",       .func = testLoudness,                .isBench = false, .usesLastKnown = false},
+    {.name = "mixer",          .func = testMixer,                   .isBench = false, .usesLastKnown = false},
+    {.name = "bench",          .func = testSpeedThings,             .isBench = true,  .usesLastKnown = false},
+    {.name = "bench-loudness", .func = benchLoudness,               .isBench = true,  .usesLastKnown = false},
 };
 
 static const int gTestCount = sizeof(gTestTable) / sizeof(gTestTable[0]);
