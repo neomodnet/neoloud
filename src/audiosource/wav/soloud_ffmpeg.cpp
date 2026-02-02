@@ -362,8 +362,9 @@ FFmpegDecoder *open(File *aFile, bool oneshot)
 	if (avcodec_open2(decoder->codecContext, codec, nullptr) < 0)
 		goto cleanup;
 
-	// setup resampler if needed
-	if (codecpar->format != AV_SAMPLE_FMT_FLTP)
+	// setup resampler if needed (must check codecContext->sample_fmt, not codecpar->format,
+	// because avcodec_open2 may negotiate a different output format than what the container advertised)
+	if (decoder->codecContext->sample_fmt != AV_SAMPLE_FMT_FLTP)
 	{
 		decoder->swrContext = swr_alloc();
 		if (!decoder->swrContext)
@@ -541,8 +542,8 @@ bool seekToFrame(FFmpegDecoder *decoder, unsigned long long frameIndex)
 	long long targetTimestamp = av_rescale_q((int64_t)adjustedFrameIndex, {1, (int)decoder->sampleRate}, stream->time_base);
 
 #ifdef _DEBUG
-	SoLoud::logStdout("ffmpeg: seeking from frame=%llu (%.3fs) to frame %llu (%.3fs), adjusted=%llu, timestamp=%lld\n", currentPos, (double)currentPos / decoder->sampleRate,
-	       frameIndex, (double)frameIndex / decoder->sampleRate, adjustedFrameIndex, targetTimestamp);
+	SoLoud::logStdout("ffmpeg: seeking from frame=%llu (%.3fs) to frame %llu (%.3fs), adjusted=%llu, timestamp=%lld\n", currentPos,
+	                  (double)currentPos / decoder->sampleRate, frameIndex, (double)frameIndex / decoder->sampleRate, adjustedFrameIndex, targetTimestamp);
 #endif
 
 	// seek to keyframe at or before target
@@ -598,7 +599,7 @@ bool seekToFrame(FFmpegDecoder *decoder, unsigned long long frameIndex)
 
 #ifdef _DEBUG
 	SoLoud::logStdout("ffmpeg: landed at keyframe %llu (%.3fs), target is frame %llu (%.3fs)\n", keyframePos, (double)keyframePos / decoder->sampleRate, frameIndex,
-	       (double)frameIndex / decoder->sampleRate);
+	                  (double)frameIndex / decoder->sampleRate);
 #endif
 
 	// if we need to advance further, read forward (discarding audio)
@@ -639,7 +640,7 @@ bool seekToFrame(FFmpegDecoder *decoder, unsigned long long frameIndex)
 
 #ifdef _DEBUG
 	SoLoud::logStdout("ffmpeg: seek completed - target frame %llu (%.3fs), actual frame %llu (%.3fs)\n", frameIndex, (double)frameIndex / decoder->sampleRate,
-	       getCurrentFrame(decoder), (double)getCurrentFrame(decoder) / decoder->sampleRate);
+	                  getCurrentFrame(decoder), (double)getCurrentFrame(decoder) / decoder->sampleRate);
 #endif
 
 	return true;
