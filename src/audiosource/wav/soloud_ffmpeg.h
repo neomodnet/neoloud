@@ -68,6 +68,7 @@ unsigned long long getTotalFrameCount(FFmpegDecoder *decoder);
 unsigned long long getCurrentFrame(FFmpegDecoder *decoder);
 bool seekToFrame(FFmpegDecoder *decoder, unsigned long long frameIndex);
 unsigned long long readFrames(FFmpegDecoder *decoder, unsigned long long framesToRead, float *buffer);
+bool isEndOfStream(FFmpegDecoder *decoder);
 
 } // namespace FFmpeg
 
@@ -92,6 +93,7 @@ inline unsigned long long getTotalFrameCount(FFmpegDecoder *) { return 0; }
 inline unsigned long long getCurrentFrame(FFmpegDecoder *) { return 0; }
 inline bool seekToFrame(FFmpegDecoder *, unsigned long long) { return false; }
 inline unsigned long long readFrames(FFmpegDecoder *, unsigned long long, float *) { return 0; }
+inline bool isEndOfStream(FFmpegDecoder *) { return true; }
 //clang-format on
 } // namespace FFmpeg
 } // namespace SoLoud

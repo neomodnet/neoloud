@@ -758,5 +758,12 @@ unsigned long long getCurrentFrame(FFmpegDecoder *decoder)
 	return decoder->currentFrame;
 }
 
+bool isEndOfStream(FFmpegDecoder *decoder)
+{
+	if (!decoder)
+		return true;
+	return decoder->endOfStream && decoder->frameBufferOffset >= decoder->frameBufferValidSamples;
+}
+
 } // namespace SoLoud::FFmpeg
 #endif

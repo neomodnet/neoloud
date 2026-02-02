@@ -554,7 +554,8 @@ bool WavStreamInstance::hasEnded()
 	}
 
 	// for codecs that have reliable end-of-stream indicators, check those too
-	if ((mParent->mFiletype == WAVSTREAM_DRMP3 && mDrmp3 && mDrmp3->atEnd) || (mParent->mFiletype == WAVSTREAM_MPG123 && mMpg123 && MPG123::isAtEnd(mMpg123)))
+	if ((mParent->mFiletype == WAVSTREAM_DRMP3 && mDrmp3 && mDrmp3->atEnd) || (mParent->mFiletype == WAVSTREAM_MPG123 && mMpg123 && MPG123::isAtEnd(mMpg123)) ||
+	    (mParent->mFiletype == WAVSTREAM_FFMPEG && mFfmpeg && FFmpeg::isEndOfStream(mFfmpeg)))
 	{
 		return true;
 	}
