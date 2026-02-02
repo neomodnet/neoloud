@@ -56,6 +56,7 @@ distribution.
 #include "soloud_vic.h"
 #include "soloud_wav.h"
 #include "soloud_waveshaperfilter.h"
+#include "soloud_loudness.h"
 #include "soloud_wavstream.h"
 
 // NOLINTBEGIN(cppcoreguidelines-avoid-c-arrays, modernize-avoid-c-arrays)
@@ -1627,6 +1628,54 @@ static void generateTimingTestWave(SoLoud::Wav &aWav, unsigned int sampleCount, 
 	delete[] buf;
 }
 
+static void testLoudness()
+{
+	SoLoud::Wav wav;
+	generateTestWave(wav);
+
+	// test with generated audio: should return a finite LUFS value
+	float lufs = 0.0f;
+	SoLoud::result res = SoLoud::Loudness::integratedLoudness(wav, lufs);
+	CHECK(res == SoLoud::SO_NO_ERROR);
+	CHECK(lufs != (float)-HUGE_VAL);
+	CHECK(lufs > -100.0f && lufs < 0.0f);
+	PRINTINFO("Loudness of test wave: %.2f LUFS\n", lufs);
+
+	// test determinism: same source should give same result
+	float lufs2 = 0.0f;
+	res = SoLoud::Loudness::integratedLoudness(wav, lufs2);
+	CHECK(res == SoLoud::SO_NO_ERROR);
+	CHECK(std::abs(lufs - lufs2) < 0.001f);
+
+	// test with a known sine wave for a more predictable range
+	SoLoud::Wav sineWav;
+	generateTimingTestWave(sineWav, 44100 * 2, 44100); // 2 seconds of 440Hz sine at 44100Hz
+	float sineLufs = 0.0f;
+	res = SoLoud::Loudness::integratedLoudness(sineWav, sineLufs);
+	CHECK(res == SoLoud::SO_NO_ERROR);
+	CHECK(sineLufs != (float)-HUGE_VAL);
+	CHECK(sineLufs > -40.0f && sineLufs < 0.0f);
+	PRINTINFO("Loudness of 440Hz sine (16-bit, amp ~0.49): %.2f LUFS\n", sineLufs);
+
+	// test silent audio: loadRawWave with zeros
+	SoLoud::Wav silentWav;
+	float silentData[1024]{};
+	silentWav.loadRawWave(silentData, 1024, 44100, 1, true);
+	float silentLufs = 0.0f;
+	res = SoLoud::Loudness::integratedLoudness(silentWav, silentLufs);
+	CHECK(res == SoLoud::SO_NO_ERROR);
+	CHECK(silentLufs == (float)-HUGE_VAL);
+
+	// test short audio (< 400ms): should still produce a result
+	SoLoud::Wav shortWav;
+	generateTimingTestWave(shortWav, 4410, 44100); // 100ms
+	float shortLufs = 0.0f;
+	res = SoLoud::Loudness::integratedLoudness(shortWav, shortLufs);
+	CHECK(res == SoLoud::SO_NO_ERROR);
+	CHECK(shortLufs != (float)-HUGE_VAL);
+	PRINTINFO("Loudness of 100ms sine: %.2f LUFS\n", shortLufs);
+}
+
 // Test that relative play speed produces the expected playback duration.
 // If the sound has duration T at 1x speed, it should have duration T/speed at speed X.
 // Uses a long audio file (10s) to minimize chunk quantization error.
@@ -1650,11 +1699,11 @@ static void testRelativePlaySpeedTiming()
 
 	SpeedTest speedTests[] = {
 	    {.speed = 1.0f,  .name = "1.0x (normal)"},
-	    {.speed = 2.0f,  .name = "2.0x (double)"},
-	    {.speed = 0.5f,  .name = "0.5x (half)"  },
+        {.speed = 2.0f,  .name = "2.0x (double)"},
+        {.speed = 0.5f,  .name = "0.5x (half)"  },
 	    {.speed = 1.5f,  .name = "1.5x"         },
-	    {.speed = 0.75f, .name = "0.75x"        },
-	    {.speed = 3.0f,  .name = "3.0x (triple)"},
+        {.speed = 0.75f, .name = "0.75x"        },
+        {.speed = 3.0f,  .name = "3.0x (triple)"},
 	};
 
 	// Test with different source sample rates to exercise resampling
@@ -1716,18 +1765,15 @@ static void testRelativePlaySpeedTiming()
 			float actualDuration = (float)totalSamplesMixed / (float)backendSampleRate;
 			float deviationSec = std::abs(actualDuration - expectedDuration);
 
-			PRINTINFO("  Speed %s: expected %.4fs, actual %.4fs (deviation: %.1fms)\n",
-			          test.name, expectedDuration, actualDuration, deviationSec * 1000.0f);
+			PRINTINFO("  Speed %s: expected %.4fs, actual %.4fs (deviation: %.1fms)\n", test.name, expectedDuration, actualDuration, deviationSec * 1000.0f);
 
 			tests++;
 			if (deviationSec > absoluteToleranceSec)
 			{
 				errorcount++;
-				SoLoud::logStdout(__FILE__
-				                  ":" STRINGIZE_MACRO(__LINE__) ":%s: Playback timing for %uHz @ %s exceeded tolerance: "
-				                  "expected %.4fs, got %.4fs (%.1fms > %.1fms tolerance)\n",
-				                  PFUNC, sourceSampleRate, test.name, expectedDuration, actualDuration,
-				                  deviationSec * 1000.0f, absoluteToleranceSec * 1000.0f);
+				SoLoud::logStdout(__FILE__ ":" STRINGIZE_MACRO(__LINE__) ":%s: Playback timing for %uHz @ %s exceeded tolerance: "
+				                                                         "expected %.4fs, got %.4fs (%.1fms > %.1fms tolerance)\n",
+				                  PFUNC, sourceSampleRate, test.name, expectedDuration, actualDuration, deviationSec * 1000.0f, absoluteToleranceSec * 1000.0f);
 			}
 
 			soloud.stopAll();
@@ -1766,6 +1812,7 @@ int main(int parc, char **pars)
 	testFilters();
 	testCore();
 	testSpeech();
+	testLoudness();
 	testMixer();
 	testSpeedThings();
 	SoLoud::logStdout("\n%d tests, %d error(s) ", tests, errorcount);
