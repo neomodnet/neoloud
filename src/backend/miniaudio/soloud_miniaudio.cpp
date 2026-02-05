@@ -49,7 +49,45 @@ distribution.
 #define MA_NO_NODE_GRAPH
 #define MA_NO_ENGINE
 
+#ifdef __EMSCRIPTEN__
+#include "miniaudio-dev-0_12.h"
+#define SL_MA_VERSION 12
+#define SL_MA_BACKEND(x) ma_device_backend_##x
+#define SL_MA_BACKEND_TYPE ma_device_backend_vtable *
+#define SL_MA_CONTEXT_INIT_TYPE ma_device_backend_config
+#define SL_MA_GET_BACKEND_NAME(backend) \
+	[&]() -> const char * { \
+		ma_device_backend_info info; \
+		ma_get_device_backend_info(backend.pVTable, &info); \
+		return info.pName; \
+	}()
+#define SL_MA_GET_BACKEND_FROM_CONFIG(backend) backend.pVTable
+#define SL_MA_MAX_BACKENDS MA_MAX_STOCK_DEVICE_BACKENDS
+#define SL_MA_MAKE_CONTEXT_INIT(backend) ma_device_backend_config_init(backend, nullptr)
+#else
 #include "miniaudio.h"
+#define SL_MA_VERSION 11
+#define SL_MA_BACKEND(x) ma_backend_##x
+#define SL_MA_BACKEND_TYPE ma_backend
+#define SL_MA_CONTEXT_INIT_TYPE ma_backend
+#define SL_MA_GET_BACKEND_NAME(backend) ma_get_backend_name(backend)
+#define SL_MA_GET_BACKEND_FROM_CONFIG(backend) backend
+#define SL_MA_MAX_BACKENDS MA_BACKEND_COUNT
+#define SL_MA_MAKE_CONTEXT_INIT(backend) (backend)
+#endif
+
+namespace
+{
+inline ma_result sl_ma_get_enabled_backends(SL_MA_CONTEXT_INIT_TYPE *pBackends, size_t aCap, size_t *pCount)
+{
+#if SL_MA_VERSION >= 12
+	*pCount = ma_get_stock_device_backends(pBackends, aCap);
+	return (*pCount > 0) ? MA_SUCCESS : MA_ERROR;
+#else
+	return ma_get_enabled_backends(pBackends, aCap, pCount);
+#endif
+}
+} // namespace
 
 #include <algorithm>
 #include <array>
@@ -84,7 +122,7 @@ struct MiniaudioData
 	Soloud *soloudInstance{nullptr};
 
 	// device management
-	ma_backend currentBackend{ma_backend_null};
+	SL_MA_BACKEND_TYPE currentBackend{SL_MA_BACKEND(null)};
 
 	// cached device configuration for seamless switching
 	unsigned int initFlags{0};
@@ -226,43 +264,43 @@ ma_uint32 parse_log_level_from_env()
 
 // use an environment variable that's mostly compatible with SDL_AUDIO_DRIVER, so we don't have
 // to do anything extra for the SDL output backend
-ma_backend parse_backend_from_env()
+SL_MA_BACKEND_TYPE parse_backend_from_env()
 {
 	const char *env = getenv("SOLOUD_MINIAUDIO_DRIVER");
 	if (!env || !*env || *env == '0')
 	{
-		return ma_backend_null; // none
+		return SL_MA_BACKEND(null); // none
 	}
 
 	if (strncasecmp(env, "wasapi", sizeof("wasapi") - 1) == 0)
-		return ma_backend_wasapi;
+		return SL_MA_BACKEND(wasapi);
 	if (strncasecmp(env, "dsound", sizeof("dsound") - 1) == 0)
-		return ma_backend_dsound;
+		return SL_MA_BACKEND(dsound);
 	if (strncasecmp(env, "winmm", sizeof("winmm") - 1) == 0)
-		return ma_backend_winmm;
+		return SL_MA_BACKEND(winmm);
 	if (strncasecmp(env, "coreaudio", sizeof("coreaudio") - 1) == 0)
-		return ma_backend_coreaudio;
+		return SL_MA_BACKEND(coreaudio);
 	if (strncasecmp(env, "sndio", sizeof("sndio") - 1) == 0)
-		return ma_backend_sndio;
+		return SL_MA_BACKEND(sndio);
 	if (strncasecmp(env, "audio4", sizeof("audio4") - 1) == 0)
-		return ma_backend_audio4;
+		return SL_MA_BACKEND(audio4);
 	if (strncasecmp(env, "oss", sizeof("oss") - 1) == 0)
-		return ma_backend_oss;
+		return SL_MA_BACKEND(oss);
 	if ((strncasecmp(env, "pulseaudio", sizeof("pulseaudio") - 1) == 0) || (strncasecmp(env, "pulse", sizeof("pulse") - 1) == 0))
-		return ma_backend_pulseaudio;
+		return SL_MA_BACKEND(pulseaudio);
 	if (strncasecmp(env, "alsa", sizeof("alsa") - 1) == 0)
-		return ma_backend_alsa;
+		return SL_MA_BACKEND(alsa);
 	if (strncasecmp(env, "jack", sizeof("jack") - 1) == 0)
-		return ma_backend_jack;
+		return SL_MA_BACKEND(jack);
 	if (strncasecmp(env, "aaudio", sizeof("aaudio") - 1) == 0)
-		return ma_backend_aaudio;
+		return SL_MA_BACKEND(aaudio);
 	if (strncasecmp(env, "opensl", sizeof("opensl") - 1) == 0)
-		return ma_backend_opensl;
+		return SL_MA_BACKEND(opensl);
 	if (strncasecmp(env, "webaudio", sizeof("webaudio") - 1) == 0)
-		return ma_backend_webaudio;
+		return SL_MA_BACKEND(webaudio);
 
 	// default fallback
-	return ma_backend_null;
+	return SL_MA_BACKEND(null);
 }
 
 void soloud_miniaudio_notification_callback(const ma_device_notification *pNotification)
@@ -302,6 +340,13 @@ void soloud_miniaudio_notification_callback(const ma_device_notification *pNotif
 	case ma_device_notification_type_unlocked:
 		logStr = "[MiniAudio INFO] Device unlocked\n";
 		break;
+
+#if SL_MA_VERSION >= 12
+	case ma_device_notification_type_errored:
+		logStr = "[MiniAudio ERROR] Device errored\n";
+		data->deviceValid.store(false);
+		break;
+#endif
 	}
 
 	if (logStr && data->maxLogLevel >= MA_LOG_LEVEL_INFO)
@@ -439,7 +484,9 @@ ma_device_config create_device_config(MiniaudioData *data, ma_share_mode shareMo
 	config.noPreSilencedOutputBuffer = true;
 	config.noFixedSizedCallback = true;
 	config.noClip = true;
+#if SL_MA_VERSION < 12
 	config.performanceProfile = ma_performance_profile_low_latency;
+#endif
 
 	if (pDeviceID)
 		config.playback.pDeviceID = pDeviceID;
@@ -471,7 +518,7 @@ ma_device_config create_device_config(MiniaudioData *data, ma_share_mode shareMo
 }
 
 // helper function to attempt device initialization with a specific backend and timeout
-ma_result try_backend_with_timeout(MiniaudioData *data, ma_backend backend, ma_share_mode shareMode)
+ma_result try_backend_with_timeout(MiniaudioData *data, SL_MA_CONTEXT_INIT_TYPE backend, ma_share_mode shareMode)
 {
 	// create context with specific backend
 	ma_context_config contextConfig = ma_context_config_init();
@@ -479,7 +526,7 @@ ma_result try_backend_with_timeout(MiniaudioData *data, ma_backend backend, ma_s
 	if (data->logInitialized)
 		contextConfig.pLog = &data->log;
 
-	ma_result contextResult = ma_context_init(std::array<ma_backend, 1>{backend}.data(), 1, &contextConfig, &data->context);
+	ma_result contextResult = ma_context_init(std::array<SL_MA_CONTEXT_INIT_TYPE, 1>{backend}.data(), 1, &contextConfig, &data->context);
 	if (contextResult != MA_SUCCESS)
 		return contextResult;
 	data->contextInitialized = true;
@@ -489,7 +536,7 @@ ma_result try_backend_with_timeout(MiniaudioData *data, ma_backend backend, ma_s
 
 	// log start of device initialization for debugging potential hangs
 	if (data->maxLogLevel >= MA_LOG_LEVEL_INFO)
-		SoLoud::logStdout("[MiniAudio INFO] Initializing device with backend '%s' in %s mode...\n", ma_get_backend_name(backend),
+		SoLoud::logStdout("[MiniAudio INFO] Initializing device with backend '%s' in %s mode...\n", SL_MA_GET_BACKEND_NAME(backend),
 		                  shareMode == ma_share_mode_exclusive ? "exclusive" : "shared");
 
 	ma_result deviceResult = ma_device_init(&data->context, &config, &data->device);
@@ -512,7 +559,7 @@ ma_result try_backend_with_timeout(MiniaudioData *data, ma_backend backend, ma_s
 
 	// success - device is initialized
 	data->deviceInitialized = true;
-	data->currentBackend = backend;
+	data->currentBackend = SL_MA_GET_BACKEND_FROM_CONFIG(backend);
 	return MA_SUCCESS;
 }
 
@@ -545,7 +592,7 @@ ma_result init_device_with_id(MiniaudioData *data, ma_share_mode shareMode, cons
 }
 
 // convert ma_device_info to generic DeviceInfo
-void convert_device_info(const ma_device_info *pMaInfo, DeviceInfo *pGenericInfo, ma_share_mode shareMode, ma_backend backend)
+void convert_device_info(const ma_device_info *pMaInfo, DeviceInfo *pGenericInfo, ma_share_mode shareMode, SL_MA_BACKEND_TYPE backend)
 {
 	if (!pMaInfo || !pGenericInfo)
 		return;
@@ -558,7 +605,7 @@ void convert_device_info(const ma_device_info *pMaInfo, DeviceInfo *pGenericInfo
 	pGenericInfo->name[nameLen] = '\0';
 
 	// append share mode suffix to name for clarity
-	if (backend == ma_backend_wasapi)
+	if (backend == SL_MA_BACKEND(wasapi))
 	{
 		const char *modeSuffix = (shareMode == ma_share_mode_exclusive) ? " (Exclusive)" : " (Shared)";
 		size_t suffixLen = strlen(modeSuffix);
@@ -600,7 +647,7 @@ result miniaudio_enumerate_devices(Soloud *aSoloud)
 
 	// build device list
 	std::vector<DeviceInfo> devices;
-	devices.reserve(maDeviceCount * (1ULL + (data->currentBackend == ma_backend_wasapi))); // reserve for worst case (shared + exclusive)
+	devices.reserve(maDeviceCount * (1ULL + (data->currentBackend == SL_MA_BACKEND(wasapi)))); // reserve for worst case (shared + exclusive)
 	bool defaultSupportsExclusive = false;
 
 	for (ma_uint32 i = 0; i < maDeviceCount; i++)
@@ -619,7 +666,7 @@ result miniaudio_enumerate_devices(Soloud *aSoloud)
 			if (maDevices[i].isDefault)
 				defaultSupportsExclusive = supportsExclusive;
 		}
-		else if (infoResult == MA_BUSY && data->currentBackend == ma_backend_wasapi)
+		else if (infoResult == MA_BUSY && data->currentBackend == SL_MA_BACKEND(wasapi))
 		{
 			// device is busy (likely in use), assume same capabilities as default device
 			supportsExclusive = defaultSupportsExclusive;
@@ -820,8 +867,8 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 
 	// get list of enabled backends
 	size_t enabledBackendCount = 0;
-	std::array<ma_backend, MA_BACKEND_COUNT + 1> enabledBackends{}; // allocate 1 more slot to hold an environment variable choice at the start
-	ma_result result = ma_get_enabled_backends(enabledBackends.data() + 1, MA_BACKEND_COUNT, &enabledBackendCount);
+	std::array<SL_MA_CONTEXT_INIT_TYPE, SL_MA_MAX_BACKENDS + 1> enabledBackends{}; // allocate 1 more slot to hold an environment variable choice at the start
+	ma_result result = sl_ma_get_enabled_backends(enabledBackends.data() + 1, SL_MA_MAX_BACKENDS, &enabledBackendCount);
 	if (result != MA_SUCCESS || enabledBackendCount == 0)
 	{
 		if (data->logInitialized)
@@ -832,17 +879,18 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 	}
 
 	size_t beginIndex = 1;
-	const ma_backend user_backend = parse_backend_from_env();
+	SL_MA_BACKEND_TYPE user_backend = parse_backend_from_env();
 
-	if (user_backend != ma_backend_null)
+	if (user_backend != SL_MA_BACKEND(null))
 	{
-		auto it = std::find(enabledBackends.begin(), enabledBackends.end(), user_backend);
+		auto it = std::find_if(enabledBackends.begin(), enabledBackends.end(),
+		                       [&](const SL_MA_CONTEXT_INIT_TYPE &b) { return SL_MA_GET_BACKEND_FROM_CONFIG(b) == user_backend; });
 		if (it != enabledBackends.end())
 		{
 			// reorder the user choice to be at the start, and set the original element to null (so we skip it later)
 			beginIndex = 0;
-			enabledBackends[0] = user_backend;
-			*it = ma_backend_null;
+			enabledBackends[0] = SL_MA_MAKE_CONTEXT_INIT(user_backend);
+			*it = SL_MA_MAKE_CONTEXT_INIT(SL_MA_BACKEND(null));
 		}
 	}
 
@@ -850,19 +898,21 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 	bool initialized = false;
 	for (size_t i = beginIndex; i < (enabledBackendCount + 1 /* because we put the real elements 1 past the start */) && !initialized; ++i)
 	{
-		ma_backend backend = enabledBackends[i];
+		SL_MA_CONTEXT_INIT_TYPE backend = enabledBackends[i];
 
 		// skip null backend since we disabled it
-		if (backend == ma_backend_null)
+		if (SL_MA_GET_BACKEND_FROM_CONFIG(backend) == SL_MA_BACKEND(null))
 			continue;
 
-		ma_share_mode initShareMode = (backend == ma_backend_wasapi) && (data->initFlags & Soloud::INIT_EXCLUSIVE) ? ma_share_mode_exclusive : ma_share_mode_shared;
+		ma_share_mode initShareMode = (SL_MA_GET_BACKEND_FROM_CONFIG(backend) == SL_MA_BACKEND(wasapi)) && (data->initFlags & Soloud::INIT_EXCLUSIVE)
+		                                  ? ma_share_mode_exclusive
+		                                  : ma_share_mode_shared;
 		for (size_t i = 0; i < 2; i++) // try shared if exclusive failed
 		{
 			const char *modeString = initShareMode == ma_share_mode_exclusive ? "exclusive mode" : "shared mode";
 
 			if (data->maxLogLevel >= MA_LOG_LEVEL_INFO)
-				SoLoud::logStdout("[MiniAudio INFO] Trying backend: %s in %s\n", ma_get_backend_name(backend), modeString);
+				SoLoud::logStdout("[MiniAudio INFO] Trying backend: %s in %s\n", SL_MA_GET_BACKEND_NAME(backend), modeString);
 
 			result = try_backend_with_timeout(data, backend, initShareMode);
 
@@ -870,7 +920,7 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 			{
 				initialized = true;
 				if (data->maxLogLevel >= MA_LOG_LEVEL_INFO)
-					SoLoud::logStdout("[MiniAudio INFO] Successfully initialized with backend: %s\n", ma_get_backend_name(backend));
+					SoLoud::logStdout("[MiniAudio INFO] Successfully initialized with backend: %s\n", SL_MA_GET_BACKEND_NAME(backend));
 				break;
 			}
 			else
@@ -878,9 +928,9 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 				if (data->maxLogLevel >= MA_LOG_LEVEL_WARNING)
 				{
 					if (result == MA_ERROR) // this indicates timeout
-						SoLoud::logStdout("[MiniAudio WARNING] Backend '%s' failed in %s due to timeout\n", ma_get_backend_name(backend), modeString);
+						SoLoud::logStdout("[MiniAudio WARNING] Backend '%s' failed in %s due to timeout\n", SL_MA_GET_BACKEND_NAME(backend), modeString);
 					else
-						SoLoud::logStdout("[MiniAudio WARNING] Backend '%s' failed in %s with error: %d\n", ma_get_backend_name(backend), modeString, result);
+						SoLoud::logStdout("[MiniAudio WARNING] Backend '%s' failed in %s with error: %d\n", SL_MA_GET_BACKEND_NAME(backend), modeString, result);
 				}
 
 				if (initShareMode != ma_share_mode_exclusive)
