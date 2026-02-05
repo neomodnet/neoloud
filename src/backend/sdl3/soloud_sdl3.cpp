@@ -57,6 +57,10 @@ result sdl3_init(SoLoud::Soloud *aSoloud, unsigned int aFlags, unsigned int aSam
 #include <string>
 #include <vector>
 
+#ifdef __EMSCRIPTEN__
+#include <bit>
+#endif
+
 #ifdef _MSC_VER
 #include <string.h>
 #ifndef strncasecmp
@@ -344,6 +348,11 @@ void params_to_optimal_devconfig(SDL3Data *instance, SDL_AudioSpec *outSpec, uns
 		*outBufsize = (*outBufsize + 1) / 2; // curse integer truncation
 #else // other platforms/drivers, just clamp to min 10ms (like windows non-wasapi)
 	*outBufsize = std::max(((outSpec->freq * 10) + 999) / 1000u, *outBufsize);
+#endif
+
+#ifdef __EMSCRIPTEN__
+	// WebAudio requires power-of-two buffer sizes
+	*outBufsize = std::bit_floor(*outBufsize);
 #endif
 
 	return;
