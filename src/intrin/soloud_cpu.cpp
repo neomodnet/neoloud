@@ -101,6 +101,13 @@ void initCPUFeatures()
 unsigned int detectCPUextensions()
 {
 	static unsigned int detectedExtensions{0};
+
+#if defined(__EMSCRIPTEN__) && defined(SOLOUD_SUPPORT_SSE2)
+	// Emscripten with WASM SIMD: SSE2 intrinsics are compiled to WASM SIMD instructions
+	detectedExtensions = CPUFEATURE_SSE | CPUFEATURE_SSE2;
+	return detectedExtensions;
+#endif
+
 	// Nothing we can do here if we're not running on x86, at the moment.
 #if defined(SOLOUD_IS_X86)
 	std::call_once(once_detect, [](void) -> void {

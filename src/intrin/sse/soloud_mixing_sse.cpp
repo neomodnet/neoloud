@@ -34,6 +34,7 @@ freely, subject to the following restrictions:
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif
+#include <emmintrin.h>
 #include <xmmintrin.h>
 
 #include <climits> // _MAX

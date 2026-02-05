@@ -37,7 +37,10 @@ namespace SoLoud
 extern void setCTZDAZ();
 void setCTZDAZ()
 {
+#ifndef __EMSCRIPTEN__
+	// set flush-to-zero and denormals-are-zero modes via MXCSR (not available in WebAssembly)
 	_mm_setcsr(_mm_getcsr() | 0x8040);
+#endif
 }
 
 } // namespace SoLoud
