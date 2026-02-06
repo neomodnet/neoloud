@@ -39,7 +39,6 @@ distribution.
 #endif
 
 // disable unneeded miniaudio features, we just want playback functionality
-#define MA_NO_NULL // no null audio backend
 #define MA_NO_DECODING
 #define MA_NO_ENCODING
 #define MA_NO_WAV
@@ -64,6 +63,8 @@ distribution.
 #define SL_MA_GET_BACKEND_FROM_CONFIG(backend) backend.pVTable
 #define SL_MA_MAX_BACKENDS MA_MAX_STOCK_DEVICE_BACKENDS
 #define SL_MA_MAKE_CONTEXT_INIT(backend) ma_device_backend_config_init(backend, nullptr)
+#define SL_MA_MAKE_NULL_CONTEXT ma_device_backend_config{}
+#define SL_MA_BACKEND_UNDEFINED nullptr
 #else
 #include "miniaudio.h"
 #define SL_MA_VERSION 11
@@ -74,6 +75,8 @@ distribution.
 #define SL_MA_GET_BACKEND_FROM_CONFIG(backend) backend
 #define SL_MA_MAX_BACKENDS MA_BACKEND_COUNT
 #define SL_MA_MAKE_CONTEXT_INIT(backend) (backend)
+#define SL_MA_MAKE_NULL_CONTEXT (SL_MA_BACKEND_TYPE)-1
+#define SL_MA_BACKEND_UNDEFINED (SL_MA_BACKEND_TYPE)-1
 #endif
 
 namespace
@@ -269,9 +272,11 @@ SL_MA_BACKEND_TYPE parse_backend_from_env()
 	const char *env = getenv("SOLOUD_MINIAUDIO_DRIVER");
 	if (!env || !*env || *env == '0')
 	{
-		return SL_MA_BACKEND(null); // none
+		return SL_MA_BACKEND_UNDEFINED; // none
 	}
 
+	if (strncasecmp(env, "null", sizeof("null") - 1) == 0)
+		return SL_MA_BACKEND(null);
 	if (strncasecmp(env, "wasapi", sizeof("wasapi") - 1) == 0)
 		return SL_MA_BACKEND(wasapi);
 	if (strncasecmp(env, "dsound", sizeof("dsound") - 1) == 0)
@@ -300,7 +305,7 @@ SL_MA_BACKEND_TYPE parse_backend_from_env()
 		return SL_MA_BACKEND(webaudio);
 
 	// default fallback
-	return SL_MA_BACKEND(null);
+	return SL_MA_BACKEND_UNDEFINED;
 }
 
 void soloud_miniaudio_notification_callback(const ma_device_notification *pNotification)
@@ -881,7 +886,7 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 	size_t beginIndex = 1;
 	SL_MA_BACKEND_TYPE user_backend = parse_backend_from_env();
 
-	if (user_backend != SL_MA_BACKEND(null))
+	if (user_backend != SL_MA_BACKEND_UNDEFINED)
 	{
 		auto it = std::find_if(enabledBackends.begin(), enabledBackends.end(),
 		                       [&](const SL_MA_CONTEXT_INIT_TYPE &b) { return SL_MA_GET_BACKEND_FROM_CONFIG(b) == user_backend; });
@@ -890,7 +895,7 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 			// reorder the user choice to be at the start, and set the original element to null (so we skip it later)
 			beginIndex = 0;
 			enabledBackends[0] = SL_MA_MAKE_CONTEXT_INIT(user_backend);
-			*it = SL_MA_MAKE_CONTEXT_INIT(SL_MA_BACKEND(null));
+			*it = SL_MA_MAKE_NULL_CONTEXT;
 		}
 	}
 
@@ -900,8 +905,8 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 	{
 		SL_MA_CONTEXT_INIT_TYPE backend = enabledBackends[i];
 
-		// skip null backend since we disabled it
-		if (SL_MA_GET_BACKEND_FROM_CONFIG(backend) == SL_MA_BACKEND(null))
+		// skip undefined context
+		if (SL_MA_GET_BACKEND_FROM_CONFIG(backend) == SL_MA_BACKEND_UNDEFINED)
 			continue;
 
 		ma_share_mode initShareMode = (SL_MA_GET_BACKEND_FROM_CONFIG(backend) == SL_MA_BACKEND(wasapi)) && (data->initFlags & Soloud::INIT_EXCLUSIVE)
