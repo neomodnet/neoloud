@@ -25,8 +25,13 @@ freely, subject to the following restrictions:
 #include "soloud_thread.h"
 
 #include <chrono>
-#include <mutex>
 #include <thread>
+
+#ifdef __EMSCRIPTEN__
+#include <atomic>
+#else
+#include <mutex>
+#endif
 
 namespace SoLoud::Thread
 {
@@ -36,6 +41,48 @@ struct ThreadHandleData
 	std::thread thread;
 };
 
+#ifdef __EMSCRIPTEN__
+
+// Emscripten's AudioWorklet threads are not pthreads, so std::mutex
+// (backed by pthread_mutex_t) does not synchronize with them.
+// Use an atomic spinlock instead, which compiles to WASM atomic
+// instructions that work across all thread types.
+
+void *createMutex()
+{
+	return new std::atomic_flag();
+}
+
+void destroyMutex(void *aHandle)
+{
+	delete static_cast<std::atomic_flag *>(aHandle);
+}
+
+void lockMutex(void *aHandle)
+{
+	auto *flag = static_cast<std::atomic_flag *>(aHandle);
+	if (flag)
+	{
+		while (flag->test_and_set(std::memory_order_acquire))
+		{
+			while (flag->test(std::memory_order_relaxed))
+			{
+			}
+		}
+	}
+}
+
+void unlockMutex(void *aHandle)
+{
+	auto *flag = static_cast<std::atomic_flag *>(aHandle);
+	if (flag)
+	{
+		flag->clear(std::memory_order_release);
+	}
+}
+
+#else
+
 void *createMutex()
 {
 	return new std::mutex();
@@ -43,13 +90,12 @@ void *createMutex()
 
 void destroyMutex(void *aHandle)
 {
-	std::mutex *mutex = static_cast<std::mutex *>(aHandle);
-	delete mutex;
+	delete static_cast<std::mutex *>(aHandle);
 }
 
 void lockMutex(void *aHandle)
 {
-	std::mutex *mutex = static_cast<std::mutex *>(aHandle);
+	auto *mutex = static_cast<std::mutex *>(aHandle);
 	if (mutex)
 	{
 		mutex->lock();
@@ -58,12 +104,14 @@ void lockMutex(void *aHandle)
 
 void unlockMutex(void *aHandle)
 {
-	std::mutex *mutex = static_cast<std::mutex *>(aHandle);
+	auto *mutex = static_cast<std::mutex *>(aHandle);
 	if (mutex)
 	{
 		mutex->unlock();
 	}
 }
+
+#endif
 
 struct soloud_thread_data
 {
@@ -220,4 +268,3 @@ PoolTask *Pool::getWork()
 	return t;
 }
 } // namespace SoLoud::Thread
-
