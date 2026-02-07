@@ -131,7 +131,21 @@ void Soloud::stopVoice_internal(unsigned int aVoice)
 		AudioSourceInstance *v = mVoice[aVoice];
 		mVoice[aVoice] = nullptr;
 
-		delete v;
+#ifdef __EMSCRIPTEN__
+		// On Emscripten, the audio callback runs on an AudioWorklet thread which
+		// is not a proper pthread. Calling free() from it crashes because dlmalloc's
+		// internal mutex goes through emscripten_futex_wait, which doesn't work on
+		// non-pthread threads. Defer deletion to the next main-thread unlock.
+		if (mInAudioCallback)
+		{
+			SOLOUD_ASSERT(mDeferredDeleteCount < VOICE_COUNT);
+			mDeferredDeletes[mDeferredDeleteCount++] = v;
+		}
+		else
+#endif
+		{
+			delete v;
+		}
 	}
 }
 

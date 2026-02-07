@@ -64,6 +64,11 @@ Soloud::Soloud()
 
 	mResampler = SOLOUD_DEFAULT_RESAMPLER;
 	mInsideAudioThreadMutex = false;
+#ifdef __EMSCRIPTEN__
+	mInAudioCallback = false;
+	mDeferredDeleteCount = 0;
+	mDeferredDeletes = {};
+#endif
 	mScratchSize = 0;
 	mSamplerate = 0;
 	mBufferSize = 0;
@@ -151,6 +156,11 @@ void Soloud::deinit()
 	unlockAudioMutex_internal();
 	SOLOUD_ASSERT(!mInsideAudioThreadMutex);
 	stopAll();
+#ifdef __EMSCRIPTEN__
+	for (int i = 0; i < mDeferredDeleteCount; i++)
+		delete mDeferredDeletes[i];
+	mDeferredDeleteCount = 0;
+#endif
 	if (mBackendCleanupFunc)
 		mBackendCleanupFunc(this);
 	mBackendCleanupFunc = nullptr;
@@ -1222,10 +1232,16 @@ void Soloud::mix_internal(unsigned int aSamples, unsigned int aStride)
 
 void Soloud::mix(void *aBuffer, unsigned int aSamples, SAMPLE_FORMAT aFormat)
 {
+#ifdef __EMSCRIPTEN__
+	mInAudioCallback = true;
+#endif
 	unsigned int stride = (aSamples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
 	mix_internal(aSamples, stride);
 
 	mMixer->interlace_samples(aBuffer, mScratch.mData, aSamples, stride, mChannels, aFormat);
+#ifdef __EMSCRIPTEN__
+	mInAudioCallback = false;
+#endif
 }
 
 void Soloud::lockAudioMutex_internal()
@@ -1240,12 +1256,31 @@ void Soloud::lockAudioMutex_internal()
 
 void Soloud::unlockAudioMutex_internal()
 {
+#ifdef __EMSCRIPTEN__
+	// Grab deferred deletes while we still hold the lock, but only if we're
+	// not in the audio callback (where free() is broken on Emscripten).
+	int deleteCount = 0;
+	AudioSourceInstance *toDelete[VOICE_COUNT];
+	if (!mInAudioCallback && mDeferredDeleteCount > 0)
+	{
+		deleteCount = mDeferredDeleteCount;
+		for (int i = 0; i < deleteCount; i++)
+			toDelete[i] = mDeferredDeletes[i];
+		mDeferredDeleteCount = 0;
+	}
+#endif
+
 	SOLOUD_ASSERT(mInsideAudioThreadMutex);
 	mInsideAudioThreadMutex = false;
 	if (mAudioThreadMutex)
 	{
 		Thread::unlockMutex(mAudioThreadMutex);
 	}
+
+#ifdef __EMSCRIPTEN__
+	for (int i = 0; i < deleteCount; i++)
+		delete toDelete[i];
+#endif
 }
 
 }; // namespace SoLoud

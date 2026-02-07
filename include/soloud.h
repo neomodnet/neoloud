@@ -52,8 +52,8 @@ class AudioSourceInstance3dData;
 class AlignedFloatBuffer
 {
 public:
-	float *mData{nullptr};            // SIMD-aligned pointer for vectorized operations
-	unsigned int mFloats{0};          // Size of buffer in floats (without padding)
+	float *mData{nullptr};   // SIMD-aligned pointer for vectorized operations
+	unsigned int mFloats{0}; // Size of buffer in floats (without padding)
 
 	AlignedFloatBuffer() = default;
 	AlignedFloatBuffer(unsigned int aFloats) { init(aFloats); }
@@ -595,6 +595,14 @@ public:
 	void *mAudioThreadMutex;
 	// Flag for when we're inside the mutex, used for debugging.
 	bool mInsideAudioThreadMutex;
+#ifdef __EMSCRIPTEN__
+	// Emscripten AudioWorklet threads can't call free() (dlmalloc uses pthreads
+	// internally, but the worklet isn't a proper pthread). Voice destruction is
+	// deferred to the next main-thread API call where free() works.
+	bool mInAudioCallback;
+	int mDeferredDeleteCount;
+	std::array<AudioSourceInstance *, VOICE_COUNT> mDeferredDeletes;
+#endif
 	// Called by SoLoud to shut down the back-end. If NULL, not called. Should be set by back-end.
 	soloudCallFunction mBackendCleanupFunc;
 
