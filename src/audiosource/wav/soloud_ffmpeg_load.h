@@ -29,12 +29,6 @@ freely, subject to the following restrictions:
 
 #if defined(WITH_FFMPEG) && __has_include(<libavcodec/avcodec.h>) && (defined(WITH_SDL3) || ((defined(_WIN32) || defined(_WIN64)) || defined(__linux__)))
 
-#include <math.h>
-#include <stdlib.h>
-
-// include ffmpeg headers in their own namespace for type derivation
-namespace ffmpeg_EXTERN
-{
 extern "C"
 {
 #include <libavcodec/avcodec.h>
@@ -46,7 +40,6 @@ extern "C"
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
-} // namespace ffmpeg_EXTERN
 
 namespace SoLoud::FFmpeg::FFmpegLoader::FFmpegFuncs
 {
@@ -110,25 +103,25 @@ namespace SoLoud::FFmpeg::FFmpegLoader::FFmpegFuncs
 	SWRESAMPLE_FUNCTIONS(X)
 
 // import types we need
-using ffmpeg_EXTERN::AVChannelLayout;
-using ffmpeg_EXTERN::AVCodec;
-using ffmpeg_EXTERN::AVCodecContext;
-using ffmpeg_EXTERN::AVCodecParameters;
-using ffmpeg_EXTERN::AVDictionary;
-using ffmpeg_EXTERN::AVFormatContext;
-using ffmpeg_EXTERN::AVFrame;
-using ffmpeg_EXTERN::AVIOContext;
-using ffmpeg_EXTERN::AVPacket;
-using ffmpeg_EXTERN::AVStream;
-using ffmpeg_EXTERN::SwrContext;
+using ::AVChannelLayout;
+using ::AVCodec;
+using ::AVCodecContext;
+using ::AVCodecParameters;
+using ::AVDictionary;
+using ::AVFormatContext;
+using ::AVFrame;
+using ::AVIOContext;
+using ::AVPacket;
+using ::AVStream;
+using ::SwrContext;
 
 // import constants that we need
-using ffmpeg_EXTERN::AV_SAMPLE_FMT_FLTP;
-using ffmpeg_EXTERN::AVMEDIA_TYPE_AUDIO;
+using ::AV_SAMPLE_FMT_FLTP;
+using ::AVMEDIA_TYPE_AUDIO;
 
 // generate function pointer types and declarations
 #define DECLARE_FFMPEG_FUNCTION(name) \
-	using name##_t = decltype(&ffmpeg_EXTERN::name); \
+	using name##_t = decltype(&::name); \
 	extern name##_t name;
 
 ALL_FFMPEG_FUNCTIONS(DECLARE_FFMPEG_FUNCTION)

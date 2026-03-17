@@ -35,10 +35,10 @@ freely, subject to the following restrictions:
 #include "soloud_ffmpeg.h"
 #include "soloud_ffmpeg_load.h"
 
-using namespace SoLoud::FFmpeg::FFmpegLoader::FFmpegFuncs;
-
 namespace SoLoud::FFmpeg
 {
+
+using namespace FFmpegLoader::FFmpegFuncs;
 
 static const unsigned int IO_BUFFER_SIZE = 65536;
 

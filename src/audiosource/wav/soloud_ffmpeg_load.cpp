@@ -91,8 +91,6 @@ typedef void(*OBJHANDLE);
 #endif
 #endif
 
-using namespace SoLoud::FFmpeg::FFmpegLoader::FFmpegFuncs;
-
 namespace SoLoud::FFmpeg::FFmpegLoader
 {
 namespace FFmpegFuncs
@@ -101,6 +99,8 @@ namespace FFmpegFuncs
 #define DEFINE_FFMPEG_FUNCTION(name) name##_t name{nullptr};
 ALL_FFMPEG_FUNCTIONS(DEFINE_FFMPEG_FUNCTION)
 } // namespace FFmpegFuncs
+
+using namespace FFmpegFuncs;
 
 namespace
 { // anon
