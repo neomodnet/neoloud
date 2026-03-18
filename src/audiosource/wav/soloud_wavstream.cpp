@@ -45,6 +45,64 @@ freely, subject to the following restrictions:
 namespace SoLoud
 {
 
+// TODO: move this out of here
+struct STBDecoder
+{
+	unsigned int decodeOggFrames(float *buffer, unsigned int samplesToRead, unsigned int bufferSize, unsigned int channels);
+
+	stb_vorbis *vorbis{nullptr};
+
+	unsigned int mFrameSize{0};
+	unsigned int mFrameOffset{0};
+	float **mOutputs{nullptr};
+	bool mEnded{false};
+};
+
+unsigned int STBDecoder::decodeOggFrames(float *buffer, unsigned int samplesToRead, unsigned int bufferSize, unsigned int channels)
+{
+	unsigned int totalSamples = 0;
+
+	while (totalSamples < samplesToRead)
+	{
+		// check if we need a new frame
+		if (mFrameOffset >= mFrameSize)
+		{
+			mFrameSize = stb_vorbis_get_frame_float(vorbis, nullptr, &mOutputs);
+			mFrameOffset = 0;
+
+			if (mFrameSize == 0)
+			{
+				mEnded = true;
+				break; // end of stream
+			}
+			else
+			{
+				mEnded = false;
+			}
+		}
+
+		// calculate how many samples we can copy from current frame
+		unsigned int samplesInFrame = mFrameSize - mFrameOffset;
+		unsigned int samplesToCopy = samplesToRead - totalSamples;
+		if (samplesToCopy > samplesInFrame)
+			samplesToCopy = samplesInFrame;
+
+		// copy samples with planar layout
+		for (unsigned int s = 0; s < samplesToCopy; s++)
+		{
+			for (unsigned int ch = 0; ch < channels; ch++)
+			{
+				buffer[ch * bufferSize + totalSamples + s] = mOutputs[ch][mFrameOffset + s];
+			}
+		}
+
+		totalSamples += samplesToCopy;
+		mFrameOffset += samplesToCopy;
+	}
+
+	return totalSamples;
+}
+
 namespace // static
 {
 
@@ -140,10 +198,7 @@ WavStreamInstance::WavStreamInstance(WavStream *aParent)
     : mParent(aParent),
       mOffset(0),
       /* don't delete the parent's stream file! */
-      mFile(nullptr, mParent->mStreamFile ? &WavStreamInstance::FileInstanceHandle::noopFileDeleter : &WavStreamInstance::FileInstanceHandle::fileDeleter),
-      mOggFrameSize(),
-      mOggFrameOffset(),
-      mOggOutputs()
+      mFile(nullptr, mParent->mStreamFile ? &WavStreamInstance::FileInstanceHandle::noopFileDeleter : &WavStreamInstance::FileInstanceHandle::fileDeleter)
 {
 	if (mParent->mMemFile)
 	{
@@ -178,7 +233,9 @@ WavStreamInstance::WavStreamInstance(WavStream *aParent)
 	break;
 	case WAVSTREAM_OGG: {
 		int e;
-		mOgg = stb_vorbis_open_file((Soloud_Filehack *)mFile.get(), 0, &e, nullptr);
+		auto stbTemp = std::make_unique<STBDecoder>();
+		if ((stbTemp->vorbis = stb_vorbis_open_file((Soloud_Filehack *)mFile.get(), 0, &e, nullptr)))
+			mOgg = stbTemp.release();
 	}
 	break;
 	case WAVSTREAM_FLAC: {
@@ -224,7 +281,8 @@ WavStreamInstance::~WavStreamInstance()
 	}
 	break;
 	case WAVSTREAM_OGG: {
-		stb_vorbis_close(mOgg);
+		stb_vorbis_close(mOgg->vorbis);
+		delete mOgg;
 	}
 	break;
 	case WAVSTREAM_FLAC: {
@@ -247,50 +305,11 @@ WavStreamInstance::~WavStreamInstance()
 	}
 };
 
-static unsigned int fillFromOggFrames(stb_vorbis *vorbis, unsigned int &frameSize, unsigned int &frameOffset, float **&frameOutputs, float *buffer,
-                                      unsigned int samplesToRead, unsigned int bufferSize, unsigned int channels)
-{
-	unsigned int totalSamples = 0;
-
-	while (totalSamples < samplesToRead)
-	{
-		// check if we need a new frame
-		if (frameOffset >= frameSize)
-		{
-			frameSize = stb_vorbis_get_frame_float(vorbis, nullptr, &frameOutputs);
-			frameOffset = 0;
-
-			if (frameSize == 0)
-				break; // end of stream
-		}
-
-		// calculate how many samples we can copy from current frame
-		unsigned int samplesInFrame = frameSize - frameOffset;
-		unsigned int samplesToCopy = samplesToRead - totalSamples;
-		if (samplesToCopy > samplesInFrame)
-			samplesToCopy = samplesInFrame;
-
-		// copy samples with planar layout
-		for (unsigned int s = 0; s < samplesToCopy; s++)
-		{
-			for (unsigned int ch = 0; ch < channels; ch++)
-			{
-				buffer[ch * bufferSize + totalSamples + s] = frameOutputs[ch][frameOffset + s];
-			}
-		}
-
-		totalSamples += samplesToCopy;
-		frameOffset += samplesToCopy;
-	}
-
-	return totalSamples;
-}
-
 unsigned int WavStreamInstance::getAudio(float *aBuffer, unsigned int aSamplesToRead, unsigned int /* aBufferSize */)
 {
 	unsigned int offset = 0;
 	float tmp[SAMPLE_GRANULARITY * MAX_CHANNELS];
-	if (aBuffer == nullptr || mFile == nullptr)
+	if (aBuffer == nullptr || mFile == nullptr || !haveCodec())
 		return 0;
 	switch (mParent->mFiletype)
 	{
@@ -364,11 +383,14 @@ unsigned int WavStreamInstance::getAudio(float *aBuffer, unsigned int aSamplesTo
 		for (i = 0; i < aSamplesToRead; i += SAMPLE_GRANULARITY)
 		{
 			unsigned int blockSize = (aSamplesToRead - i) > SAMPLE_GRANULARITY ? SAMPLE_GRANULARITY : aSamplesToRead - i;
-			unsigned int samplesRead = fillFromOggFrames(mOgg, mOggFrameSize, mOggFrameOffset, mOggOutputs, aBuffer + i, blockSize, aSamplesToRead, mChannels);
+			unsigned int samplesRead = mOgg->decodeOggFrames(aBuffer + i, blockSize, aSamplesToRead, mChannels);
 			offset += samplesRead;
 
 			if (samplesRead < blockSize)
+			{
+				mOgg->mEnded = true;
 				break; // end of stream
+			}
 		}
 
 		mOffset += offset;
@@ -396,11 +418,8 @@ unsigned int WavStreamInstance::getAudio(float *aBuffer, unsigned int aSamplesTo
 	}
 	break;
 	case WAVSTREAM_FFMPEG: {
-		if (mFfmpeg)
-		{
-			offset = (unsigned int)FFmpeg::readFrames(mFfmpeg, aSamplesToRead, aBuffer);
-			mOffset += offset;
-		}
+		offset = (unsigned int)FFmpeg::readFrames(mFfmpeg, aSamplesToRead, aBuffer);
+		mOffset += offset;
 		return offset;
 	}
 	break;
@@ -410,8 +429,12 @@ unsigned int WavStreamInstance::getAudio(float *aBuffer, unsigned int aSamplesTo
 
 result WavStreamInstance::seek(double aSeconds, float *mScratch, unsigned int mScratchSize)
 {
-	if (mParent->mFiletype == WAVSTREAM_DRMP3 && mDrmp3)
+	if (!haveCodec())
+		return AudioSourceInstance::seek(aSeconds, mScratch, mScratchSize);
+
+	switch (mParent->mFiletype)
 	{
+	case WAVSTREAM_DRMP3: {
 		drmp3_uint64 targetFrame = (drmp3_uint64)floor(aSeconds * mDrmp3->sampleRate);
 		if (drmp3_seek_to_pcm_frame(mDrmp3, targetFrame))
 		{
@@ -425,8 +448,7 @@ result WavStreamInstance::seek(double aSeconds, float *mScratch, unsigned int mS
 		}
 		return UNKNOWN_ERROR;
 	}
-	else if (mParent->mFiletype == WAVSTREAM_MPG123 && mMpg123)
-	{
+	case WAVSTREAM_MPG123: {
 		off_t targetFrame = (off_t)floor(aSeconds * mBaseSamplerate);
 		off_t seekResult = MPG123::seekToFrame(mMpg123, targetFrame);
 		if (seekResult >= 0)
@@ -438,26 +460,27 @@ result WavStreamInstance::seek(double aSeconds, float *mScratch, unsigned int mS
 		}
 		return UNKNOWN_ERROR;
 	}
-	else if (mParent->mFiletype == WAVSTREAM_OGG && mOgg)
-	{
+	case WAVSTREAM_OGG: {
 		unsigned int pos = (unsigned int)floor(mBaseSamplerate * aSeconds);
 
-		if (stb_vorbis_seek(mOgg, pos) == 1)
+		if (stb_vorbis_seek(mOgg->vorbis, pos) == 1)
 		{
 			// only reset frame state after successful seek
-			mOggFrameSize = 0;
-			mOggFrameOffset = 0;
+			mOgg->mFrameSize = 0;
+			mOgg->mFrameOffset = 0;
 
 			// get actual position after seek (may not be exact)
-			mOffset = stb_vorbis_get_sample_offset(mOgg);
+			mOffset = stb_vorbis_get_sample_offset(mOgg->vorbis);
 			double newPosition = static_cast<double>(mOffset) / mBaseSamplerate;
 			mStreamPosition = newPosition;
+
+			mOgg->mEnded = mOffset >= mParent->mSampleCount;
+
 			return SO_NO_ERROR;
 		}
 		return UNKNOWN_ERROR;
 	}
-	else if (mParent->mFiletype == WAVSTREAM_WAV && mWav)
-	{
+	case WAVSTREAM_WAV: {
 		drwav_uint64 targetFrame = (drwav_uint64)floor(aSeconds * mWav->sampleRate);
 
 		if (drwav_seek_to_pcm_frame(mWav, targetFrame))
@@ -470,8 +493,7 @@ result WavStreamInstance::seek(double aSeconds, float *mScratch, unsigned int mS
 		}
 		return UNKNOWN_ERROR;
 	}
-	else if (mParent->mFiletype == WAVSTREAM_FLAC && mFlac)
-	{
+	case WAVSTREAM_FLAC: {
 		drflac_uint64 targetFrame = (drflac_uint64)floor(aSeconds * mFlac->sampleRate);
 
 		if (drflac_seek_to_pcm_frame(mFlac, targetFrame))
@@ -484,8 +506,7 @@ result WavStreamInstance::seek(double aSeconds, float *mScratch, unsigned int mS
 		}
 		return UNKNOWN_ERROR;
 	}
-	else if (mParent->mFiletype == WAVSTREAM_FFMPEG && mFfmpeg)
-	{
+	case WAVSTREAM_FFMPEG: {
 		unsigned long long targetFrame = (unsigned long long)floor(aSeconds * mBaseSamplerate);
 
 		if (FFmpeg::seekToFrame(mFfmpeg, targetFrame))
@@ -496,52 +517,46 @@ result WavStreamInstance::seek(double aSeconds, float *mScratch, unsigned int mS
 		}
 		return UNKNOWN_ERROR;
 	}
+	}
+
 	return AudioSourceInstance::seek(aSeconds, mScratch, mScratchSize);
 }
 
 result WavStreamInstance::rewind()
 {
-	switch (mParent->mFiletype)
-	{
-	case WAVSTREAM_OGG:
-		if (mOgg)
-		{
-			stb_vorbis_seek_start(mOgg);
-		}
-		break;
-	case WAVSTREAM_FLAC:
-		if (mFlac)
-		{
-			drflac_seek_to_pcm_frame(mFlac, 0);
-		}
-		break;
-	case WAVSTREAM_MPG123:
-		if (mMpg123)
-		{
-			MPG123::seekToFrame(mMpg123, 0);
-		}
-		break;
-	case WAVSTREAM_DRMP3:
-		if (mDrmp3)
-		{
-			drmp3_seek_to_pcm_frame(mDrmp3, 0);
-		}
-		break;
-	case WAVSTREAM_WAV:
-		if (mWav)
-		{
-			drwav_seek_to_pcm_frame(mWav, 0);
-		}
-		break;
-	case WAVSTREAM_FFMPEG:
-		if (mFfmpeg)
-		{
-			FFmpeg::seekToFrame(mFfmpeg, 0);
-		}
-		break;
-	}
 	mOffset = 0;
 	mStreamPosition = 0.0f;
+	if (!haveCodec())
+		return 0;
+
+	switch (mParent->mFiletype)
+	{
+	case WAVSTREAM_OGG: {
+		if (stb_vorbis_seek_start(mOgg->vorbis) == 1)
+		{
+			// only reset frame state after successful seek
+			mOgg->mFrameSize = 0;
+			mOgg->mFrameOffset = 0;
+			mOgg->mEnded = false;
+		}
+	}
+	break;
+	case WAVSTREAM_FLAC:
+		drflac_seek_to_pcm_frame(mFlac, 0);
+		break;
+	case WAVSTREAM_MPG123:
+		MPG123::seekToFrame(mMpg123, 0);
+		break;
+	case WAVSTREAM_DRMP3:
+		drmp3_seek_to_pcm_frame(mDrmp3, 0);
+		break;
+	case WAVSTREAM_WAV:
+		drwav_seek_to_pcm_frame(mWav, 0);
+		break;
+	case WAVSTREAM_FFMPEG:
+		FFmpeg::seekToFrame(mFfmpeg, 0);
+		break;
+	}
 	return 0;
 }
 
@@ -549,22 +564,26 @@ bool WavStreamInstance::hasEnded()
 {
 	// check if we've reached the estimated sample count
 	if (mOffset >= mParent->mSampleCount)
-	{
 		return true;
-	}
+
+	// TODO: have we "ended" if we never could even start?
+	if (!haveCodec())
+		return false;
 
 	// for codecs that have reliable end-of-stream indicators, check those too
-	if ((mParent->mFiletype == WAVSTREAM_DRMP3 && mDrmp3 && mDrmp3->atEnd) || (mParent->mFiletype == WAVSTREAM_MPG123 && mMpg123 && MPG123::isAtEnd(mMpg123)) ||
-	    (mParent->mFiletype == WAVSTREAM_FFMPEG && mFfmpeg && FFmpeg::isEndOfStream(mFfmpeg)))
+	switch (mParent->mFiletype)
 	{
-		return true;
-	}
-
-	// for OGG: if we have no current frame and are at/past estimated end, consider ended
-	// this handles cases where stb_vorbis_stream_length_in_samples was inaccurate
-	if (mParent->mFiletype == WAVSTREAM_OGG && mOggFrameSize == 0 && mOffset > 0)
-	{
-		return true;
+	case WAVSTREAM_OGG:
+		return mOgg->mEnded;
+	case WAVSTREAM_MPG123:
+		return MPG123::isAtEnd(mMpg123);
+	case WAVSTREAM_DRMP3:
+		return mDrmp3->atEnd;
+	case WAVSTREAM_FFMPEG:
+		return FFmpeg::isEndOfStream(mFfmpeg);
+	case WAVSTREAM_FLAC:
+	case WAVSTREAM_WAV:
+		break;
 	}
 
 	return false;

@@ -54,6 +54,8 @@ struct MPG123Decoder;
 class WavStream;
 class File;
 
+struct STBDecoder;
+
 enum WAVSTREAM_FILETYPE
 {
 	WAVSTREAM_WAV = 0,
@@ -79,7 +81,7 @@ class WavStreamInstance : public AudioSourceInstance
 	unsigned int mOffset;
 	FileInstanceHandle mFile;
 	union {
-		stb_vorbis *mOgg;
+		STBDecoder *mOgg;
 		drflac *mFlac;
 		MPG123::MPG123Decoder *mMpg123;
 		drmp3 *mDrmp3;
@@ -89,10 +91,6 @@ class WavStreamInstance : public AudioSourceInstance
 		void *dummy{nullptr};
 	};
 	bool haveCodec() const { return mDrmp3 || mFfmpeg || mFlac || mMpg123 || mOgg || mWav; }
-
-	unsigned int mOggFrameSize;
-	unsigned int mOggFrameOffset;
-	float **mOggOutputs;
 
 public:
 	WavStreamInstance() = delete;
