@@ -562,7 +562,7 @@ bool WavStreamInstance::hasEnded()
 
 	// for OGG: if we have no current frame and are at/past estimated end, consider ended
 	// this handles cases where stb_vorbis_stream_length_in_samples was inaccurate
-	if (mParent->mFiletype == WAVSTREAM_OGG && mOggFrameSize == 0 && mOffset >= mParent->mSampleCount)
+	if (mParent->mFiletype == WAVSTREAM_OGG && mOggFrameSize == 0 && mOffset > 0)
 	{
 		return true;
 	}
