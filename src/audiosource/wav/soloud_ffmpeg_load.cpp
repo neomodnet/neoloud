@@ -33,6 +33,9 @@ freely, subject to the following restrictions:
 #if defined(_WIN32) || defined(_WIN64)
 #define LNAME(x, ver) #x "-" #ver ".dll"
 #define LNAMESTR(x, ver) x + "-" + std::to_string(ver) + ".dll"
+#elif defined(__APPLE__)
+#define LNAME(x, ver) "lib" #x "." #ver ".dylib"
+#define LNAMESTR(x, ver) "lib" + x + "." + std::to_string(ver) + ".dylib"
 #else
 #define LNAME(x, ver) "lib" #x ".so." #ver
 #define LNAMESTR(x, ver) "lib" + x + ".so." + std::to_string(ver)
