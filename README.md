@@ -1,4 +1,4 @@
-### NOTE: This fork is solely tested and used with https://github.com/whrvt/McOsu-ng and https://github.com/kiwec/neosu
+### NOTE: This fork is solely tested and used with https://github.com/whrvt/McOsu-ng and https://github.com/neomodnet/neomod
 ### Any other usecase is (currently) not supported.
 
 SoLoud
