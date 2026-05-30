@@ -42,11 +42,14 @@ using namespace FFmpegLoader::FFmpegFuncs;
 
 static const unsigned int IO_BUFFER_SIZE = 65536;
 
-struct FFmpegIOContext
+namespace
+{
+struct FFmpegIOContext final
 {
 	File *file;
 	int pos;
 };
+} // namespace
 
 struct FFmpegDecoder
 {
