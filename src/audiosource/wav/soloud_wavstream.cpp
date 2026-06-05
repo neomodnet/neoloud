@@ -278,6 +278,7 @@ unsigned int WavStreamInstance::getAudio(float *aBuffer, unsigned int aSamplesTo
 	}
 	break;
 	case WAVSTREAM_MPG123: {
+		const int mpg123Channels = MPG123::getChannels(mMpg123);
 		unsigned int i, j, k;
 
 		for (i = 0; i < aSamplesToRead; i += SAMPLE_GRANULARITY)
@@ -290,7 +291,7 @@ unsigned int WavStreamInstance::getAudio(float *aBuffer, unsigned int aSamplesTo
 			{
 				for (k = 0; k < mChannels; k++)
 				{
-					aBuffer[k * aSamplesToRead + i + j] = tmp[j * MPG123::getChannels(mMpg123) + k];
+					aBuffer[k * aSamplesToRead + i + j] = tmp[j * mpg123Channels + k];
 				}
 			}
 
