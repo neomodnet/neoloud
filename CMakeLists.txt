@@ -41,8 +41,8 @@ if(MSVC AND PkgConfig_FOUND)
 endif()
 
 # check for sdl3
-if(SOLOUD_WITH_SDL3 AND PkgConfig_FOUND)
-    pkg_check_modules(SDL3 QUIET sdl3>=3.2.0)
+if(SOLOUD_WITH_SDL3)
+    find_package(SDL3 3.2.0 CONFIG QUIET)
     if(SDL3_FOUND)
         message(STATUS "Found SDL3 ${SDL3_VERSION}")
     endif()
@@ -54,7 +54,7 @@ endif()
 
 # check for libmpg123
 if(SOLOUD_WITH_LIBMPG123 AND PkgConfig_FOUND)
-    pkg_check_modules(MPG123 QUIET libmpg123>=1.30.0)
+    pkg_check_modules(MPG123 QUIET IMPORTED_TARGET libmpg123>=1.30.0)
     if(MPG123_FOUND)
         message(STATUS "Found libmpg123 ${MPG123_VERSION}")
     endif()
@@ -85,12 +85,8 @@ set(SOLOUD_BACKEND_SOURCES
     src/backend/miniaudio/soloud_miniaudio.cpp
     src/backend/nosound/soloud_nosound.cpp
     src/backend/null/soloud_null.cpp
+    src/backend/sdl3/soloud_sdl3.cpp # compiles to nothing if SDL3 is unavailable
 )
-
-# add sdl3 backend if available
-if(SOLOUD_WITH_SDL3)
-    list(APPEND SOLOUD_BACKEND_SOURCES src/backend/sdl3/soloud_sdl3.cpp)
-endif()
 
 # vendored sources
 file(GLOB SOLOUD_VENDORED_SOURCES "vendored/*.c" "vendored/*.cpp")
@@ -240,21 +236,17 @@ endif()
 
 # link libraries
 if(SOLOUD_WITH_SDL3)
-if(MSVC)
-    target_include_directories(soloud PRIVATE ${SDL3_INCLUDEDIR})
-else()
-    target_include_directories(soloud PRIVATE ${SDL3_INCLUDE_DIRS})
-endif()
-    target_link_libraries(soloud PRIVATE ${SDL3_LIBRARIES})
+    target_link_libraries(soloud PRIVATE SDL3::SDL3)
 endif()
 
 if(SOLOUD_WITH_LIBMPG123)
 if(MSVC)
+    # pkgconf --msvc-syntax output isn't parsed into the imported target, wire up manually
     target_include_directories(soloud PRIVATE ${MPG123_INCLUDEDIR})
-else()
-    target_include_directories(soloud PRIVATE ${MPG123_INCLUDE_DIRS})
-endif()
     target_link_libraries(soloud PRIVATE ${MPG123_LIBRARIES})
+else()
+    target_link_libraries(soloud PRIVATE PkgConfig::MPG123)
+endif()
 endif()
 
 # platform specific libraries (don't actually link to them, just add the includes)
