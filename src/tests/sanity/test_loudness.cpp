@@ -10,46 +10,40 @@
 // isolating the LUFS computation cost.
 void benchLoudness()
 {
-	const unsigned int sampleRate = 44100;
-	const unsigned int channels = 2;
-	const unsigned int trackDurationSec = 180; // 3 minutes per track
-	const unsigned int samplesPerTrack = sampleRate * trackDurationSec;
-	const unsigned int totalFloats = samplesPerTrack * channels;
+	constexpr unsigned int sampleRate = 44100;
+	constexpr unsigned int channels = 2;
+	constexpr unsigned int trackDurationSec = 180; // 3 minutes per track
+	constexpr unsigned int samplesPerTrack = sampleRate * trackDurationSec;
+	constexpr unsigned int totalFloats = samplesPerTrack * channels;
 
 	// target: process enough audio to get a stable measurement
 	// 100 tracks * 180s = 18,000 seconds of audio
-	const int numTracks = 100;
+	constexpr int numTracks = 100;
 
-	// pre-generate one track of sample data to copy from.
-	// realistic content: sum of a few sine waves at different frequencies,
-	// similar spectral profile to music.
-	auto *templateBuf = new float[totalFloats];
+	// pre-generate one track of sample data.
+	// realistic content: sum of a few sine waves at different frequencies, similar spectral profile to music.
+	auto *buf = new float[totalFloats];
 	for (unsigned int i = 0; i < samplesPerTrack; i++)
 	{
 		float t = (float)i / (float)sampleRate;
 		float sample = 0.3f * std::sin(2.0f * (float)M_PI * 440.0f * t) + 0.2f * std::sin(2.0f * (float)M_PI * 880.0f * t) +
 		               0.15f * std::sin(2.0f * (float)M_PI * 220.0f * t) + 0.1f * std::sin(2.0f * (float)M_PI * 1760.0f * t);
 		// stereo: identical channels (channel layout doesn't affect perf)
-		templateBuf[i] = sample;
-		templateBuf[samplesPerTrack + i] = sample;
+		buf[i] = sample;
+		buf[samplesPerTrack + i] = sample;
 	}
+
+	// wav instance to run loudness on
+	SoLoud::Wav wav;
+	wav.loadRawWave(buf, totalFloats, (float)sampleRate, channels, /*aCopy=*/true);
 
 	double totalAudioSec = 0.0;
 	long startMs = getmsec();
 
 	for (int t = 0; t < numTracks; t++)
 	{
-		// allocate a fresh buffer and copy template data.
-		// loadRawWave takes ownership, so Wav destructor frees it.
-		auto *buf = new float[totalFloats];
-		memcpy(buf, templateBuf, totalFloats * sizeof(float));
-
-		SoLoud::Wav wav;
-		wav.loadRawWave(buf, totalFloats, (float)sampleRate, channels);
-
 		float lufs = 0.0f;
 		SoLoud::Loudness::integratedLoudness(wav, lufs);
-
 		totalAudioSec += trackDurationSec;
 	}
 
@@ -66,7 +60,7 @@ void benchLoudness()
 	SoLoud::logStdout("  Throughput: %.0f audio-sec / wall-sec (%.0fx realtime)\n", throughput, throughput);
 	SoLoud::logStdout("  Projected for 30M audio-sec: %.0f sec (%.1f min)\n", estimatedSec, estimatedSec / 60.0);
 
-	delete[] templateBuf;
+	delete[] buf;
 }
 
 void testLoudness()
