@@ -44,7 +44,7 @@ constexpr double RLB_FILTER_FC = 38.135;      // revised low-frequency B-curve c
 constexpr double RLB_FILTER_Q = 0.5003;       // RLB quality factor
 
 // BS.1770-4 gating parameters
-constexpr double BLOCK_DURATION = 0.4;         // gating block duration (seconds)
+// constexpr double BLOCK_DURATION = 0.4;         // gating block duration (seconds)
 constexpr double BLOCK_OVERLAP_STEP = 0.1;     // step between overlapping blocks (seconds)
 constexpr double ABSOLUTE_GATE_LUFS = -70.0;   // absolute gating threshold (LUFS)
 constexpr double RELATIVE_GATE_OFFSET = -10.0; // relative gate is mean loudness + this (LUFS)
@@ -54,16 +54,6 @@ constexpr double LOUDNESS_OFFSET = -0.691;     // constant offset in LUFS formul
 constexpr float WEIGHT_FRONT = 1.0f;     // L, R, C
 constexpr float WEIGHT_SURROUND = 1.41f; // Ls, Rs (approx. +1.5 dB)
 constexpr float WEIGHT_LFE = 0.0f;       // LFE excluded from measurement
-
-inline float biquadProcess(const BiquadCoeffs &c, BiquadState &s, float x)
-{
-	float y = c.b0 * x + c.b1 * s.x1 + c.b2 * s.x2 - c.a1 * s.y1 - c.a2 * s.y2;
-	s.x2 = s.x1;
-	s.x1 = x;
-	s.y2 = s.y1;
-	s.y1 = y;
-	return y;
-}
 
 // K-weighting pre-filter: high shelf modeling head-related acoustic effects
 // Coefficients computed in double, then narrowed to float for runtime use.
@@ -139,15 +129,24 @@ float channelWeight(unsigned int aChannel, unsigned int aChannelCount)
 void kWeightChunkScalar(const BiquadCoeffs &aPreCoeffs, const BiquadCoeffs &aRlbCoeffs, BiquadState *aPreState, BiquadState *aRlbState, const float *aBuffer,
                         unsigned int aSamplesRead, unsigned int aBufStride, unsigned int aChannels, float *aOut)
 {
+	float temp = 0.f;
 	for (unsigned int ch = 0; ch < aChannels; ch++)
 	{
-		const float *src = aBuffer + ch * aBufStride;
-		float *dst = aOut + ch * aBufStride;
+		const float *src = aBuffer + (size_t)(ch * aBufStride);
+		float *dst = aOut + (size_t)(ch * aBufStride);
 		for (unsigned int i = 0; i < aSamplesRead; i++)
 		{
 			float sample = src[i];
-			sample = biquadProcess(aPreCoeffs, aPreState[ch], sample);
-			sample = biquadProcess(aRlbCoeffs, aRlbState[ch], sample);
+#define BIQUAD_PROCESS(sample_, c, s) \
+	temp = (c).b0 * (sample_) + (c).b1 * (s).x1 + (c).b2 * (s).x2 - (c).a1 * (s).y1 - (c).a2 * (s).y2; \
+	(s).x2 = (s).x1; \
+	(s).x1 = (sample_); \
+	(s).y2 = (s).y1; \
+	(s).y1 = temp; \
+	(sample_) = temp;
+			BIQUAD_PROCESS(sample, aPreCoeffs, aPreState[ch]);
+			BIQUAD_PROCESS(sample, aRlbCoeffs, aRlbState[ch]);
+#undef BIQUAD_PROCESS
 			dst[i] = sample;
 		}
 	}
@@ -232,7 +231,7 @@ result integratedLoudness(AudioSource &aSource, float &aLoudness)
 
 			for (unsigned int ch = 0; ch < channels; ch++)
 			{
-				const float *src = kWeightedChunk + ch * SAMPLE_GRANULARITY + processed;
+				const float *src = kWeightedChunk + (size_t)(ch * SAMPLE_GRANULARITY) + processed;
 				double acc = 0.0;
 				for (unsigned int i = 0; i < n; i++)
 					acc += (double)src[i] * src[i];
