@@ -276,22 +276,22 @@ elseif(UNIX)
 endif()
 
 # c api shared library (CURRENTLY OUTDATED, SHOULD BE RE-GENERATED!)
-if(BUILD_SHARED_LIBS)
-    add_library(soloud_c SHARED src/c_api/soloud_c.cpp)
-    target_link_libraries(soloud_c PRIVATE soloud)
-    target_include_directories(soloud_c
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:include>
-    )
+# if(BUILD_SHARED_LIBS)
+#     add_library(soloud_c SHARED src/c_api/soloud_c.cpp)
+#     target_link_libraries(soloud_c PRIVATE soloud)
+#     target_include_directories(soloud_c
+#         PUBLIC
+#             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+#             $<INSTALL_INTERFACE:include>
+#     )
 
-    # export definitions for windows dll
-    if(WIN32)
-        set_target_properties(soloud_c PROPERTIES
-            WINDOWS_EXPORT_ALL_SYMBOLS ON
-        )
-    endif()
-endif()
+#     # export definitions for windows dll
+#     if(WIN32)
+#         set_target_properties(soloud_c PROPERTIES
+#             WINDOWS_EXPORT_ALL_SYMBOLS ON
+#         )
+#     endif()
+# endif()
 
 # test executables
 if(SOLOUD_TESTS)
