@@ -54,6 +54,7 @@ struct DeviceInfo
 {
 	std::array<char, 256> name;       // Human-readable device name
 	std::array<char, 128> identifier; // Backend-specific device identifier
+	unsigned int backend;             // BACKENDS value of the backend the device belongs to (pass it to init() together with the identifier)
 	bool isDefault;                   // Whether this is the default device
 	bool isExclusive;                 // Whether this represents exclusive mode access
 	void *nativeDeviceInfo;           // Backend-specific device info (optional)
@@ -82,7 +83,10 @@ public:
 		AUTO = 0,
 		MINIAUDIO,
 		SDL3,
-		ASIO, // windows only, never picked by AUTO; use enumerateDevices(..., ASIO) to list drivers before init
+		// windows only, never picked by AUTO; use enumerateDevices(..., ASIO) to list the installed drivers before init(). the driver is loaded on
+		// the thread that calls init(), and every device call except isDeviceLost() and enumerateDevices() has to come from that same thread, which
+		// also has to pump window messages (drivers deliver their notifications through it)
+		ASIO,
 		NOSOUND,
 		NULLDRIVER,
 		BACKEND_MAX,
@@ -119,8 +123,9 @@ public:
 	};
 
 	// Initialize SoLoud. Must be called before SoLoud can be used.
-	// aDeviceIdentifier optionally selects the playback device (see enumerateDevices()), NULL means the backend's default device.
-	// Backends that can't open a specific device directly switch to it after initializing; initialization fails if that doesn't succeed.
+	// aDeviceIdentifier optionally selects the playback device (see enumerateDevices()), NULL means the backend's default device (for ASIO, which
+	// has no default, the first installed driver). Backends that can't open a specific device directly switch to it after initializing;
+	// initialization fails if that doesn't succeed.
 	result init(unsigned int aFlags = Soloud::CLIP_ROUNDOFF, unsigned int aBackend = Soloud::AUTO, unsigned int aSamplerate = Soloud::AUTO,
 	            unsigned int aBufferSize = Soloud::AUTO, unsigned int aChannels = 2, const char *aDeviceIdentifier = nullptr);
 
@@ -186,6 +191,10 @@ public:
 	For backends that support exclusive mode (e.g., WASAPI), each physical device will
 	appear twice in the enumeration: once for shared mode and once for exclusive mode.
 	Check the isExclusive field to distinguish between them.
+
+	Each entry records the backend it belongs to in its backend field, so entries from
+	several enumerations can be kept in one list. ASIO lists the installed drivers, none
+	of which is marked as the default.
 	*/
 	result enumerateDevices(DeviceInfo **ppDevices, unsigned int *pDeviceCount, unsigned int aBackend = Soloud::AUTO);
 
@@ -204,7 +213,7 @@ public:
 
 	Thread Safety
 	-------------
-	Safe.
+	Safe, except with the ASIO backend (init() thread only, see BACKENDS).
 	*/
 	result getCurrentDevice(DeviceInfo *pDeviceInfo);
 
@@ -224,7 +233,7 @@ public:
 
 	Thread Safety
 	-------------
-	Safe.
+	Safe, except with the ASIO backend (init() thread only, see BACKENDS).
 
 	Remarks
 	-------
@@ -250,6 +259,10 @@ public:
 	------------
 	SO_NO_ERROR if successful; error code otherwise.
 	NOT_IMPLEMENTED if the current backend can't report latency.
+
+	Thread Safety
+	-------------
+	Backend dependent; ASIO only accepts calls from the thread that called init() (see BACKENDS).
 	*/
 	result getDeviceLatency(unsigned int *pLatencyFrames);
 
@@ -270,6 +283,10 @@ public:
 	------------
 	SO_NO_ERROR if successful; error code otherwise.
 	NOT_IMPLEMENTED if the current backend doesn't expose buffer size limits.
+
+	Thread Safety
+	-------------
+	Backend dependent; ASIO only accepts calls from the thread that called init() (see BACKENDS).
 	*/
 	result getBufferSizeLimits(unsigned int *pMinSize, unsigned int *pMaxSize, unsigned int *pPreferredSize, int *pGranularity);
 
@@ -281,9 +298,14 @@ public:
 	SO_NO_ERROR if successful; error code otherwise.
 	NOT_IMPLEMENTED if the current backend or device has no control panel.
 
+	Thread Safety
+	-------------
+	Backend dependent; ASIO only accepts calls from the thread that called init() (see BACKENDS).
+
 	Remarks
 	-------
-	Settings changed in the panel can require the device to be reopened, see isDeviceLost().
+	The call can block until the panel is closed. Settings changed in the panel can require
+	the device to be reopened, see isDeviceLost().
 	*/
 	result openDeviceControlPanel();
 
@@ -293,8 +315,10 @@ public:
 	Return Value
 	------------
 	true if the backend can't play audio on its device until it is reopened: the device was
-	disconnected, or its driver requested a reset (e.g. after buffer size changes in its control
-	panel). Recover by calling setDevice() again, or by re-initializing.
+	unplugged or disabled (MiniAudio, ASIO), or its driver requested a reset (ASIO, e.g. after
+	buffer size changes in its control panel). Recover by calling setDevice() again, or by
+	re-initializing. A reopened ASIO device uses whatever its driver prefers now rather than the
+	buffer size and sample rate init() asked for, so the panel's settings stick.
 
 	Thread Safety
 	-------------

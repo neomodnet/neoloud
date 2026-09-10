@@ -197,6 +197,8 @@ result Soloud::init(unsigned int aFlags, unsigned int aBackend, unsigned int aSa
 
 	mBackendID = 0;
 	mBackendString = nullptr;
+	mGlobalVolume = 1;
+	mPostClipScaler = 0.95f;
 
 	int samplerate = 44100;
 	int buffersize = 2048;
@@ -328,9 +330,10 @@ result Soloud::openDeviceControlPanel()
 	return NOT_IMPLEMENTED;
 }
 
+// also called by backends when a device switch changes the stream configuration, so only the stream configuration (and the speaker layout that
+// follows from the channel count) is set here, not the state the application controls
 void Soloud::postinit_internal(unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aFlags, unsigned int aChannels)
 {
-	mGlobalVolume = 1;
 	mChannels = aChannels;
 	mSamplerate = aSamplerate;
 	mBufferSize = aBufferSize;
@@ -342,7 +345,6 @@ void Soloud::postinit_internal(unsigned int aSamplerate, unsigned int aBufferSiz
 	mOutputScratch.init(mScratchSize * MAX_CHANNELS);
 
 	mFlags = aFlags;
-	mPostClipScaler = 0.95f;
 	switch (mChannels)
 	{
 	case 1:

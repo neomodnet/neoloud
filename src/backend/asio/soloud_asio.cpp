@@ -98,10 +98,10 @@ struct AsioData
 	IASIO *driver{nullptr};
 	DeviceInfo currentDevice{};
 
-	// cached init parameters for device switching
+	// cached init parameters for device switching (the rate and size requests are dropped again when the driver changes them on its own, see asio_message)
 	unsigned int initFlags{0};
-	unsigned int requestedSampleRate{0};
-	unsigned int requestedBufferSize{0};
+	std::atomic<unsigned int> requestedSampleRate{0};
+	std::atomic<unsigned int> requestedBufferSize{0};
 	unsigned int requestedChannels{0};
 
 	// negotiated stream configuration
@@ -116,9 +116,11 @@ struct AsioData
 	bool outputReadySupported{false};
 	std::atomic<bool> running{false}; // set around start()/stop(), checked by the buffer switch callback
 	bool comInitialized{false};
+	DWORD threadId{0};                      // the thread that loaded the driver, the only one that may call into it
 	std::vector<unsigned char> interleaved; // mix() output, deinterleaved into the driver's per-channel buffers
 
 	std::atomic<bool> deviceLost{false};
+	std::atomic<unsigned int> overloads{0};
 	unsigned int logLevel{LOG_NONE};
 };
 
@@ -202,8 +204,9 @@ void enumerate_drivers(std::vector<AsioDriverEntry> &aDrivers)
 		wide_to_utf8(clsidString.data(), clsidUtf8);
 		snprintf(entry.info.identifier.data(), entry.info.identifier.size(), "%s%s", IDENTIFIER_PREFIX, clsidUtf8.data());
 
-		// asio has no notion of a default device, the first driver stands in for it
-		entry.info.isDefault = aDrivers.empty();
+		// asio has no notion of a default device (a NULL identifier opens the first installed driver)
+		entry.info.backend = Soloud::ASIO;
+		entry.info.isDefault = false;
 		entry.info.isExclusive = true;
 		entry.info.nativeDeviceInfo = nullptr;
 		aDrivers.push_back(entry);
@@ -212,7 +215,7 @@ void enumerate_drivers(std::vector<AsioDriverEntry> &aDrivers)
 	RegCloseKey(asioKey);
 }
 
-// resolves an identifier from enumerate_drivers to its driver, NULL or empty picks the default
+// resolves an identifier from enumerate_drivers to its driver, NULL or empty picks the first installed one
 bool find_driver(const char *aIdentifier, AsioDriverEntry &aEntry)
 {
 	std::vector<AsioDriverEntry> drivers;
@@ -226,6 +229,23 @@ bool find_driver(const char *aIdentifier, AsioDriverEntry &aEntry)
 		}
 	}
 	return false;
+}
+
+BOOL CALLBACK find_main_window_proc(HWND aWindow, LPARAM aParam)
+{
+	if (!IsWindowVisible(aWindow) || GetWindow(aWindow, GW_OWNER) != nullptr)
+		return TRUE; // keep looking
+	*reinterpret_cast<HWND *>(aParam) = aWindow;
+	return FALSE;
+}
+
+// the sdk wants the application's main window as the driver's system reference: drivers parent their control panel to it, and a panel that isn't
+// owned by a fullscreen game window can open behind it. the calling thread's first visible unowned top-level window is the best guess for that
+HWND find_main_window()
+{
+	HWND window = nullptr;
+	EnumThreadWindows(GetCurrentThreadId(), find_main_window_proc, reinterpret_cast<LPARAM>(&window));
+	return window ? window : GetDesktopWindow();
 }
 
 // maps an asio sample type to the soloud output format that can be written to it directly
@@ -292,6 +312,13 @@ long clamp_buffer_size(long aMinSize, long aMaxSize, long aPreferredSize, long a
 	return size;
 }
 
+template <size_t BYTES>
+void deinterleave_samples(const unsigned char *aSrc, size_t aStride, long aFrames, unsigned char *aDest)
+{
+	for (long i = 0; i < aFrames; i++)
+		memcpy(aDest + i * BYTES, aSrc + i * aStride, BYTES);
+}
+
 void deinterleave_channel(const AsioData *data, long aChannel, void *aDest)
 {
 	const unsigned char *src = data->interleaved.data() + static_cast<size_t>(aChannel) * data->bytesPerSample;
@@ -309,9 +336,20 @@ void deinterleave_channel(const AsioData *data, long aChannel, void *aDest)
 		return;
 	}
 
+	// fixed copy sizes, so the per-sample copies compile down to plain loads and stores
 	unsigned char *dst = static_cast<unsigned char *>(aDest);
-	for (long i = 0; i < data->bufferSize; i++)
-		memcpy(dst + i * data->bytesPerSample, src + i * stride, data->bytesPerSample);
+	switch (data->bytesPerSample)
+	{
+	case 2:
+		deinterleave_samples<2>(src, stride, data->bufferSize, dst);
+		break;
+	case 3:
+		deinterleave_samples<3>(src, stride, data->bufferSize, dst);
+		break;
+	default:
+		deinterleave_samples<4>(src, stride, data->bufferSize, dst);
+		break;
+	}
 }
 
 void asio_buffer_switch(long aBufferIndex, ASIOBool /*aDirectProcess*/)
@@ -336,10 +374,14 @@ ASIOTime *asio_buffer_switch_time_info(ASIOTime * /*aTimeInfo*/, long aBufferInd
 
 void asio_sample_rate_did_change(ASIOSampleRate aSampleRate)
 {
-	// the stream has to be rebuilt around the new rate, so let the application reopen the device
+	// the stream has to be rebuilt around the new rate, so let the application reopen the device; whoever changed the rate (the control panel, an
+	// external clock) wins over what init() asked for, otherwise the reopen would just change it back
 	AsioData *data = gInstance.load(std::memory_order_acquire);
 	if (data && static_cast<double>(aSampleRate) != data->sampleRate)
+	{
+		data->requestedSampleRate.store(Soloud::AUTO);
 		data->deviceLost.store(true);
+	}
 }
 
 long asio_message(long aSelector, long aValue, void * /*aMessage*/, double * /*aOpt*/)
@@ -349,25 +391,47 @@ long asio_message(long aSelector, long aValue, void * /*aMessage*/, double * /*a
 	{
 	case kAsioSelectorSupported:
 		return (aValue == kAsioEngineVersion || aValue == kAsioResetRequest || aValue == kAsioResyncRequest || aValue == kAsioLatenciesChanged ||
-		        aValue == kAsioSupportsTimeInfo)
+		        aValue == kAsioSupportsTimeInfo || aValue == kAsioOverload)
 		           ? 1
 		           : 0;
 	case kAsioEngineVersion:
 		return ASIO_HOST_VERSION;
 	case kAsioResetRequest:
-		// the driver wants to be closed and reopened, e.g. after a buffer size change in its control panel
+		// the driver wants to be closed and reopened, e.g. after a buffer size change in its control panel; whatever it prefers now is the size to
+		// reopen with, not the one init() asked for
 		if (data)
+		{
+			data->requestedBufferSize.store(Soloud::AUTO);
 			data->deviceLost.store(true);
+		}
 		return 1;
 	case kAsioResyncRequest:
 	case kAsioLatenciesChanged:
 		// nothing is cached that depends on timestamps or latencies
-		return 1;
 	case kAsioSupportsTimeInfo:
+		return 1;
+	case kAsioOverload:
+		// a buffer switch missed its deadline (dropout)
+		if (data)
+		{
+			unsigned int count = ++data->overloads;
+			if (data->logLevel >= LOG_WARNING)
+				SoLoud::logStdout("[ASIO WARNING] Driver reported an overload (%u so far)\n", count);
+		}
 		return 1;
 	default:
 		return 0;
 	}
+}
+
+// asio drivers are apartment-threaded com objects, so every call into one has to come from the thread that loaded it
+bool on_init_thread(const AsioData *data, const char *aCaller)
+{
+	if (GetCurrentThreadId() == data->threadId)
+		return true;
+	if (data->logLevel >= LOG_ERROR)
+		SoLoud::logStdout("[ASIO ERROR] %s called from a different thread than init()\n", aCaller);
+	return false;
 }
 
 void stop_driver(AsioData *data)
@@ -424,12 +488,11 @@ result open_driver(AsioData *data, const AsioDriverEntry &aEntry)
 	{
 		if (data->logLevel >= LOG_ERROR)
 			SoLoud::logStdout("[ASIO ERROR] Failed to load driver '%s' (0x%08lx)\n", name, static_cast<unsigned long>(hr));
-		return UNKNOWN_ERROR;
+		return DLL_NOT_FOUND;
 	}
 	data->driver = driver;
 
-	// the window handle only serves as the parent of the driver's control panel
-	if (!driver->init(GetDesktopWindow()))
+	if (!driver->init(find_main_window()))
 	{
 		std::array<char, 128> message{}; // ASIODriverInfo::errorMessage size
 		driver->getErrorMessage(message.data());
@@ -457,11 +520,12 @@ result open_driver(AsioData *data, const AsioDriverEntry &aEntry)
 		close_driver(data);
 		return UNKNOWN_ERROR;
 	}
-	data->bufferSize = clamp_buffer_size(minSize, maxSize, preferredSize, granularity, data->requestedBufferSize);
+	data->bufferSize = clamp_buffer_size(minSize, maxSize, preferredSize, granularity, data->requestedBufferSize.load());
 
 	// only touch the driver's clock when a specific rate was asked for and the driver accepts it, otherwise keep what the user configured
-	if (data->requestedSampleRate != Soloud::AUTO && driver->canSampleRate(static_cast<ASIOSampleRate>(data->requestedSampleRate)) == ASE_OK)
-		driver->setSampleRate(static_cast<ASIOSampleRate>(data->requestedSampleRate));
+	const unsigned int requestedSampleRate = data->requestedSampleRate.load();
+	if (requestedSampleRate != Soloud::AUTO && driver->canSampleRate(static_cast<ASIOSampleRate>(requestedSampleRate)) == ASE_OK)
+		driver->setSampleRate(static_cast<ASIOSampleRate>(requestedSampleRate));
 
 	ASIOSampleRate currentRate = 0;
 	if (driver->getSampleRate(&currentRate) != ASE_OK || currentRate <= 0)
@@ -555,6 +619,7 @@ void asio_deinit(Soloud *aSoloud)
 	if (!data)
 		return;
 
+	on_init_thread(data, "deinit"); // can only warn here, the driver has to go regardless
 	close_driver(data);
 	if (data->comInitialized)
 		CoUninitialize();
@@ -567,7 +632,7 @@ void asio_deinit(Soloud *aSoloud)
 result asio_pause(Soloud *aSoloud)
 {
 	AsioData *data = static_cast<AsioData *>(aSoloud->mBackendData);
-	if (!data || !data->driver)
+	if (!data || !data->driver || !on_init_thread(data, "pause"))
 		return INVALID_PARAMETER;
 
 	stop_driver(data);
@@ -577,7 +642,7 @@ result asio_pause(Soloud *aSoloud)
 result asio_resume(Soloud *aSoloud)
 {
 	AsioData *data = static_cast<AsioData *>(aSoloud->mBackendData);
-	if (!data || !data->driver)
+	if (!data || !data->driver || !on_init_thread(data, "resume"))
 		return INVALID_PARAMETER;
 
 	if (data->running.load())
@@ -598,7 +663,7 @@ result asio_get_current_device(Soloud *aSoloud, DeviceInfo *pDeviceInfo)
 result asio_set_device(Soloud *aSoloud, const char *aDeviceIdentifier)
 {
 	AsioData *data = static_cast<AsioData *>(aSoloud->mBackendData);
-	if (!data)
+	if (!data || !on_init_thread(data, "setDevice"))
 		return INVALID_PARAMETER;
 
 	AsioDriverEntry entry{};
@@ -634,7 +699,7 @@ result asio_set_device(Soloud *aSoloud, const char *aDeviceIdentifier)
 result asio_get_device_latency(Soloud *aSoloud, unsigned int *pLatencyFrames)
 {
 	AsioData *data = static_cast<AsioData *>(aSoloud->mBackendData);
-	if (!data || !data->driver)
+	if (!data || !data->driver || !on_init_thread(data, "getDeviceLatency"))
 		return INVALID_PARAMETER;
 
 	long inputLatency = 0, outputLatency = 0;
@@ -648,7 +713,7 @@ result asio_get_device_latency(Soloud *aSoloud, unsigned int *pLatencyFrames)
 result asio_get_buffer_size_limits(Soloud *aSoloud, unsigned int *pMinSize, unsigned int *pMaxSize, unsigned int *pPreferredSize, int *pGranularity)
 {
 	AsioData *data = static_cast<AsioData *>(aSoloud->mBackendData);
-	if (!data || !data->driver)
+	if (!data || !data->driver || !on_init_thread(data, "getBufferSizeLimits"))
 		return INVALID_PARAMETER;
 
 	// queried live, since the control panel can change these at any time
@@ -666,7 +731,7 @@ result asio_get_buffer_size_limits(Soloud *aSoloud, unsigned int *pMinSize, unsi
 result asio_open_control_panel(Soloud *aSoloud)
 {
 	AsioData *data = static_cast<AsioData *>(aSoloud->mBackendData);
-	if (!data || !data->driver)
+	if (!data || !data->driver || !on_init_thread(data, "openDeviceControlPanel"))
 		return INVALID_PARAMETER;
 
 	ASIOError err = data->driver->controlPanel();
@@ -714,6 +779,7 @@ result asio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSamplerate,
 
 	aSoloud->mBackendData = data;
 	data->soloud = aSoloud;
+	data->threadId = GetCurrentThreadId();
 
 	// cache initialization parameters for device switching
 	data->initFlags = aFlags;

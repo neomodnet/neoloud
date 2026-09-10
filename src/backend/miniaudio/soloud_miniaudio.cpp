@@ -67,6 +67,7 @@ distribution.
 	ma_device_backend_config {}
 #define SL_MA_BACKEND_UNDEFINED nullptr
 #define SL_MA_CONTEXT_BACKEND(context) (context).pVTable
+#define SL_MA_DEVICE_STOPPED(device) (ma_device_get_status(&(device)) == ma_device_status_stopped)
 #else
 #include "miniaudio.h"
 #define SL_MA_VERSION 11
@@ -80,6 +81,7 @@ distribution.
 #define SL_MA_MAKE_NULL_CONTEXT (SL_MA_BACKEND_TYPE)(ma_backend_null + 1)
 #define SL_MA_BACKEND_UNDEFINED (SL_MA_BACKEND_TYPE)(ma_backend_null + 1)
 #define SL_MA_CONTEXT_BACKEND(context) (context).backend
+#define SL_MA_DEVICE_STOPPED(device) (ma_device_get_state(&(device)) == ma_device_state_stopped)
 #endif
 
 namespace
@@ -143,6 +145,7 @@ struct MiniaudioData
 	bool logInitialized{false};
 	bool contextInitialized{false};
 	bool deviceInitialized{false};
+	bool paused{false}; // stopped through pause(), as opposed to stopped by the backend because the device went away
 	bool hasCurrentDeviceInfo{false};
 };
 
@@ -476,6 +479,7 @@ result soloud_miniaudio_pause(Soloud *aSoloud)
 		{
 			if (ma_device_stop(&data->device) != MA_SUCCESS)
 				return UNKNOWN_ERROR;
+			data->paused = true;
 		}
 	}
 	return SO_NO_ERROR;
@@ -491,9 +495,21 @@ result soloud_miniaudio_resume(Soloud *aSoloud)
 		{
 			if (ma_device_start(&data->device) != MA_SUCCESS)
 				return UNKNOWN_ERROR;
+			data->paused = false;
 		}
 	}
 	return SO_NO_ERROR;
+}
+
+bool miniaudio_is_device_lost(Soloud *aSoloud)
+{
+	auto *data = static_cast<MiniaudioData *>(aSoloud->mBackendData);
+	if (!data)
+		return false;
+
+	// the device only stops on its own when the backend lost it (unplugged, disabled, or errored out); miniaudio restarts it by itself if it comes back
+	std::lock_guard<std::mutex> lock(data->deviceMutex);
+	return data->deviceInitialized && !data->paused && SL_MA_DEVICE_STOPPED(data->device);
 }
 
 // helper function to create device config from cached parameters
@@ -651,6 +667,7 @@ void convert_device_info(const ma_device_info *pMaInfo, DeviceInfo *pGenericInfo
 	snprintf(pGenericInfo->identifier.data(), pGenericInfo->identifier.size(), "ma_%d_%d_%d_%s%s", (int)pMaInfo->id.wasapi[0], (int)pMaInfo->id.wasapi[1],
 	         (int)pMaInfo->id.wasapi[2], &pMaInfo->name[0], modeTag);
 
+	pGenericInfo->backend = Soloud::MINIAUDIO;
 	pGenericInfo->isDefault = (pMaInfo->isDefault != 0 && shareMode == ma_share_mode_shared); // only create 1 default device (we init in shared mode)
 	pGenericInfo->isExclusive = (shareMode == ma_share_mode_exclusive);
 	pGenericInfo->nativeDeviceInfo = nullptr;
@@ -852,6 +869,7 @@ result miniaudio_set_device(Soloud *aSoloud, const char *deviceIdentifier)
 	}
 
 	data->deviceValid.store(true);
+	data->paused = false;
 
 	if (data->maxLogLevel >= MA_LOG_LEVEL_INFO)
 		SoLoud::logStdout("[MiniAudio INFO] Successfully switched to new device in %s mode\n", targetShareMode == ma_share_mode_exclusive ? "exclusive" : "shared");
@@ -1038,6 +1056,7 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 	aSoloud->mEnumerateDevicesFunc = miniaudio_enumerate_devices;
 	aSoloud->mGetCurrentDeviceFunc = miniaudio_get_current_device_info;
 	aSoloud->mSetDeviceFunc = miniaudio_set_device;
+	aSoloud->mIsDeviceLostFunc = miniaudio_is_device_lost;
 
 	result = ma_device_start(&data->device);
 	if (result != MA_SUCCESS)
