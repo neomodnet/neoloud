@@ -39,10 +39,6 @@ namespace SoLoud
 {
 namespace
 {
-// the library's default preset: 120 ms analysis blocks, one every 30 ms. the stage primes the stretcher at every seek, so this latency only
-// decides how long a live ratio change takes to reach the output
-constexpr double BLOCK_SECONDS = 0.12;
-constexpr double INTERVAL_SECONDS = 0.03;
 // spread each block's spectral work over the process() calls of an interval instead of doing it all in the call that completes the block
 constexpr bool SPLIT_COMPUTATION = true;
 // the library only draws random phases at extreme ratios, but a fixed seed keeps the output deterministic either way

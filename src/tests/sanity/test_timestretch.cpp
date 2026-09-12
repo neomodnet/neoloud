@@ -1,8 +1,9 @@
 #include "sanity.h"
 
+#include "soloud_timestretch.h" // constants
 #include "soloud_wavstream.h"
 
-#include <cstring> // the vendored fft.h uses std::memcpy without including it
+#include <cstring>
 #include "signalsmith-stretch/signalsmith-stretch.h"
 
 #include <algorithm>
@@ -212,7 +213,7 @@ void checkLibraryUnity()
 	constexpr unsigned int CHANNELS = 2;
 	constexpr unsigned int FRAMES = RATE * 2;
 	signalsmith::stretch::SignalsmithStretch<float, std::mt19937> stretch(1);
-	stretch.configure(CHANNELS, (int)(RATE * 0.12), (int)(RATE * 0.03), true);
+	stretch.configure(CHANNELS, (int)(RATE * SoLoud::TimeStretcher::BLOCK_SECONDS), (int)(RATE * SoLoud::TimeStretcher::INTERVAL_SECONDS), true);
 
 	std::vector<float> input(CHANNELS * FRAMES);
 	std::vector<float> output(CHANNELS * FRAMES, 0.0f);
@@ -327,7 +328,7 @@ void checkTransparency(SoLoud::Soloud &aSoloud)
 	Capture engaged = capture(aSoloud, h, buffers);
 	aSoloud.stopAll();
 
-	// the first 90 ms come from the priming pre-roll, which only approximates the source
+	// the first outputLatency() frames come from the priming pre-roll, which only approximates the source
 	const size_t settled = RATE / 5;
 	float maxDiff = 0.0f;
 	float preRollDiff = 0.0f;

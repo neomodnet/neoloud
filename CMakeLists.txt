@@ -352,6 +352,7 @@ if(SOLOUD_TESTS)
                 target_include_directories(${TEST_NAME} PRIVATE
                     ${CMAKE_CURRENT_SOURCE_DIR}/include
                     ${CMAKE_CURRENT_SOURCE_DIR}/src
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/intrin
                     ${CMAKE_CURRENT_SOURCE_DIR}/vendored
                 )

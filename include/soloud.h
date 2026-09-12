@@ -431,7 +431,7 @@ public:
 	result setRelativePlaySpeed(handle aVoiceHandle, float aSpeed);
 	// Set the tempo: play at aTempo times the speed with the pitch kept (2.0 plays twice as fast; 1.0 is the default), on top of the relative
 	// play speed, which changes speed and pitch together. The first tempo or pitch shift other than 1.0 engages the voice's time-stretch stage,
-	// which is primed with about 150 ms of source audio in the audio thread's next mix, and again after every seek() of that voice.
+	// which reads a short stretch of source audio ahead to prime itself in the audio thread's next mix, and again after every seek() of that voice.
 	result setTempo(handle aVoiceHandle, float aTempo);
 	// Set the pitch shift: play with the pitch multiplied by aFactor and the speed kept (2.0 = one octave up, 0.5 = one octave down; 1.0 is the
 	// default), on top of the relative play speed. See setTempo.
