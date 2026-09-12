@@ -341,7 +341,8 @@ void Soloud::postinit_internal(unsigned int aSamplerate, unsigned int aBufferSiz
 	if (mScratchSize < SAMPLE_GRANULARITY * 4) // 4096
 		mScratchSize = SAMPLE_GRANULARITY * 4;
 
-	mScratch.init(mScratchSize * MAX_CHANNELS);
+	// mix() never mixes more than mScratchSize samples at once, and mixBus_internal mixes one voice at a time (see VoiceScratch)
+	mScratch.init(VoiceScratch::size(mScratchSize, mChannels));
 	mOutputScratch.init(mScratchSize * MAX_CHANNELS);
 
 	mFlags = aFlags;
@@ -827,23 +828,10 @@ unsigned int Soloud::resampleVoicePrecise_internal(AudioSourceInstance *voice,
 	return safeOutputCount;
 }
 
-namespace MixingConstants
-{
-// Scratch buffer allocation strategy
-// Each voice needs space for: voice processing + temp reads + delay handling
-constexpr size_t VOICE_SCRATCH_MULTIPLIER = MAX_CHANNELS;          // Voice processing buffer
-constexpr size_t TEMP_READ_BUFFER_SIZE = SAMPLE_GRANULARITY * 4UL; // Temporary buffer for chunk reading
-
-// Voice processing limits to prevent resource exhaustion
-constexpr size_t MIN_VOICES_PER_BATCH = 1; // Always process at least one voice
-} // namespace MixingConstants
-
 // High-performance audio mixing with dynamic resampling and chunked processing
 void Soloud::mixBus_internal(float *aBuffer, unsigned int aSamplesToRead, unsigned int aBufferSize, float *aScratch, unsigned int aBus, float aSamplerate,
                              unsigned int aChannels, unsigned int aResampler)
 {
-	using namespace MixingConstants;
-
 	// Clear accumulation buffer - this is where all voices will be mixed together
 	for (unsigned int sample = 0; sample < aSamplesToRead; sample++)
 	{
@@ -853,20 +841,11 @@ void Soloud::mixBus_internal(float *aBuffer, unsigned int aSamplesToRead, unsign
 		}
 	}
 
-	// Calculate scratch space allocation for optimal voice processing
-	// Each voice needs separate buffers to avoid interference during parallel processing
-	unsigned int voiceScratchSize = VOICE_SCRATCH_MULTIPLIER * aBufferSize;
-	unsigned int tempScratchSize = TEMP_READ_BUFFER_SIZE;
-	unsigned int delayScratchSize = aChannels * aBufferSize;
-	unsigned int totalPerVoice = voiceScratchSize + tempScratchSize + delayScratchSize;
-
-	// Align memory allocation to improve cache performance
-	totalPerVoice = (totalPerVoice + CPU_MEMORY_ALIGNMENT_MASK()) & ~CPU_MEMORY_ALIGNMENT_MASK();
-
-	// Calculate maximum number of voices we can process in parallel given memory constraints
-	unsigned int maxVoicesInParallel = (mScratchSize * MAX_CHANNELS) / totalPerVoice;
-	if (maxVoicesInParallel < MIN_VOICES_PER_BATCH)
-		maxVoicesInParallel = MIN_VOICES_PER_BATCH;
+	// Voices are mixed one after another, so the scratch holds a single voice's block, laid out as described at VoiceScratch. Whoever owns
+	// the scratch sized it for the largest aBufferSize it gets mixed with.
+	float *voiceScratch = aScratch;
+	float *tempScratch = voiceScratch + MAX_CHANNELS * aBufferSize;
+	float *delayScratch = tempScratch + VoiceScratch::READ_BUFFER_SIZE;
 
 	// Process each active voice using chunk-based approach for consistent latency
 	for (unsigned int voiceIdx = 0; voiceIdx < mActiveVoiceCount; voiceIdx++)
@@ -910,25 +889,6 @@ void Soloud::mixBus_internal(float *aBuffer, unsigned int aSamplesToRead, unsign
 		if (outputSamples == 0)
 			continue;
 
-		// Allocate scratch space for this voice using round-robin allocation
-		// This prevents memory fragmentation and ensures predictable performance
-		unsigned int voiceSlot = voiceIdx % maxVoicesInParallel;
-		float *voiceScratch = aScratch + (voiceSlot * totalPerVoice);
-		float *tempScratch = voiceScratch + voiceScratchSize;
-		float *delayScratch = tempScratch + tempScratchSize;
-
-		// Adjust temporary scratch size based on available space
-		unsigned int actualTempScratchSize = tempScratchSize;
-		if (voiceSlot == maxVoicesInParallel - 1)
-		{
-			// Last slot gets any remaining space
-			unsigned int remainingSpace = (mScratchSize * MAX_CHANNELS) - (voiceSlot * totalPerVoice + voiceScratchSize + delayScratchSize);
-			if (remainingSpace < tempScratchSize)
-			{
-				actualTempScratchSize = remainingSpace;
-			}
-		}
-
 		// Process in chunks to maintain consistent latency and prevent buffer overflow
 		// Large sample rate differences might require multiple iterations
 		unsigned int totalProduced = 0;
@@ -957,7 +917,7 @@ void Soloud::mixBus_internal(float *aBuffer, unsigned int aSamplesToRead, unsign
 				                                                             aSamplerate,
 				                                                             aResampler,
 				                                                             tempScratch,
-				                                                             actualTempScratchSize);
+				                                                             VoiceScratch::READ_BUFFER_SIZE);
 
 				if (samplesProduced == 0)
 				{
@@ -972,7 +932,7 @@ void Soloud::mixBus_internal(float *aBuffer, unsigned int aSamplesToRead, unsign
 				// Inaudible but must tick: advance voice position without producing audio
 				// This keeps the voice synchronized for when it becomes audible again
 				unsigned int samplesAdvanced =
-				    resampleVoicePrecise_internal(voice, nullptr, chunkOutput, 0, aSamplerate, aResampler, tempScratch, actualTempScratchSize);
+				    resampleVoicePrecise_internal(voice, nullptr, chunkOutput, 0, aSamplerate, aResampler, tempScratch, VoiceScratch::READ_BUFFER_SIZE);
 
 				if (samplesAdvanced == 0)
 					break;
@@ -1299,10 +1259,17 @@ void Soloud::mix(void *aBuffer, unsigned int aSamples, SAMPLE_FORMAT aFormat)
 #ifdef __EMSCRIPTEN__
 	mInAudioCallback = true;
 #endif
-	unsigned int stride = (aSamples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
-	mix_internal(aSamples, stride);
+	// the scratch buffers are sized for mScratchSize samples, so anything larger is mixed in pieces
+	while (aSamples > 0)
+	{
+		unsigned int samples = aSamples < mScratchSize ? aSamples : mScratchSize;
+		unsigned int stride = (samples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
+		mix_internal(samples, stride);
 
-	mMixer->interlace_samples(aBuffer, mOutputScratch.mData, aSamples, stride, mChannels, aFormat);
+		mMixer->interlace_samples(aBuffer, mOutputScratch.mData, samples, stride, mChannels, aFormat);
+		aBuffer = static_cast<unsigned char *>(aBuffer) + (size_t)samples * mChannels * sampleSize(aFormat);
+		aSamples -= samples;
+	}
 #ifdef __EMSCRIPTEN__
 	mInAudioCallback = false;
 #endif
@@ -1313,10 +1280,21 @@ void Soloud::mixPlanar(void *const *aBuffers, unsigned int aSamples, SAMPLE_FORM
 #ifdef __EMSCRIPTEN__
 	mInAudioCallback = true;
 #endif
-	unsigned int stride = (aSamples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
-	mix_internal(aSamples, stride);
+	// as in mix()
+	void *buffers[MAX_CHANNELS];
+	for (unsigned int i = 0; i < mChannels; i++)
+		buffers[i] = aBuffers[i];
+	while (aSamples > 0)
+	{
+		unsigned int samples = aSamples < mScratchSize ? aSamples : mScratchSize;
+		unsigned int stride = (samples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
+		mix_internal(samples, stride);
 
-	Mixer::convert_samples(aBuffers, mOutputScratch.mData, aSamples, stride, mChannels, aFormat);
+		Mixer::convert_samples(buffers, mOutputScratch.mData, samples, stride, mChannels, aFormat);
+		for (unsigned int i = 0; i < mChannels; i++)
+			buffers[i] = static_cast<unsigned char *>(buffers[i]) + (size_t)samples * sampleSize(aFormat);
+		aSamples -= samples;
+	}
 #ifdef __EMSCRIPTEN__
 	mInAudioCallback = false;
 #endif

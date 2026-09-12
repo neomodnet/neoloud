@@ -26,6 +26,7 @@ freely, subject to the following restrictions:
 #ifndef SOLOUD_MIXING_INTERNAL_H
 #define SOLOUD_MIXING_INTERNAL_H
 
+#include "soloud_config.h"
 #include "soloud_cpu.h"
 #if !defined(SOLOUD_DISABLE_SIMD)
 #include "soloud_ll_mixing.h"
@@ -88,6 +89,19 @@ inline constexpr float CENTER_SUB_MIX_SCALE = 0.7f; // Center + sub mixing level
 inline constexpr float SURROUND_MIX_SCALE = 0.5f;   // Surround channel mixing level
 inline constexpr float QUAD_MIX_SCALE = 0.25f;      // 4-channel average mixing
 } // namespace ChannelMixingConstants
+
+// Scratch layout for mixing one voice in Soloud::mixBus_internal, in floats: the voice's resampled channels (MAX_CHANNELS of aBufferSize each),
+// then the buffer its source data is read into, then the buffer a delayed voice is panned into before it is added at its offset (aChannels of
+// aBufferSize each). Voices are mixed one after another, so a scratch holds one such block, sized for the largest aBufferSize it is mixed with.
+namespace VoiceScratch
+{
+inline constexpr unsigned int READ_BUFFER_SIZE = SAMPLE_GRANULARITY * 4;
+
+inline constexpr unsigned int size(unsigned int aBufferSize, unsigned int aChannels)
+{
+	return (MAX_CHANNELS + aChannels) * aBufferSize + READ_BUFFER_SIZE;
+}
+} // namespace VoiceScratch
 
 // Declare AVX/SSE-optimized mixer implementations here, as well.
 #if defined(SOLOUD_SUPPORT_AVX2)

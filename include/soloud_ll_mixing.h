@@ -45,6 +45,22 @@ enum SAMPLE_FORMAT : unsigned char
 	SAMPLE_SIGNED32
 };
 
+// Bytes per sample of a SAMPLE_FORMAT
+inline constexpr unsigned int sampleSize(SAMPLE_FORMAT aFormat)
+{
+	switch (aFormat)
+	{
+	case SAMPLE_UNSIGNED8:
+		return 1;
+	case SAMPLE_SIGNED16:
+		return 2;
+	case SAMPLE_SIGNED24:
+		return 3;
+	default:
+		return 4;
+	}
+}
+
 class Mixer
 {
 private:

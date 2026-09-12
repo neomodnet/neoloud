@@ -28,6 +28,7 @@ freely, subject to the following restrictions:
 #include "soloud_audiosource.h"
 #include "soloud_fft.h"
 #include "soloud_internal.h"
+#include "soloud_mixing_internal.h"
 
 namespace SoLoud
 {
@@ -39,10 +40,9 @@ BusInstance::BusInstance(Bus *aParent)
 		mVisualizationChannelVolume[i] = 0;
 	for (int i = 0; i < 256; i++)
 		mVisualizationWaveData[i] = 0;
-	// use the same minimum scratch size as the main Soloud class
-	if (mScratchSize < SAMPLE_GRANULARITY * 4) // 4096
-		mScratchSize = SAMPLE_GRANULARITY * 4;
-	mScratch.init(mScratchSize * MAX_CHANNELS);
+	// the mixer reads at most VoiceScratch::READ_BUFFER_SIZE floats from a voice at a time, which bounds the buffers this is asked to fill from
+	// the audio thread. getAudio() grows the scratch if something asks for more, like seek() discarding through it from the main thread.
+	mScratch.init(mixing::VoiceScratch::size(mixing::VoiceScratch::READ_BUFFER_SIZE / aParent->mChannels, aParent->mChannels));
 }
 
 unsigned int BusInstance::getAudio(float *aBuffer, unsigned int aSamplesToRead, unsigned int aBufferSize)
@@ -59,6 +59,8 @@ unsigned int BusInstance::getAudio(float *aBuffer, unsigned int aSamplesToRead, 
 
 	Soloud *s = mParent->mSoloud;
 
+	if (mScratch.mFloats < mixing::VoiceScratch::size(aBufferSize, mChannels))
+		mScratch.init(mixing::VoiceScratch::size(aBufferSize, mChannels));
 	s->mixBus_internal(aBuffer, aSamplesToRead, aBufferSize, mScratch.mData, handle, mSamplerate, mChannels, mParent->mResampler);
 
 	int i;

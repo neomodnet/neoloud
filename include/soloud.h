@@ -543,7 +543,7 @@ public:
 	static unsigned int ensureSourceData_internal(AudioSourceInstance *voice, unsigned int samplesNeeded, float *scratchBuffer, unsigned int scratchSize);
 	unsigned int resampleVoicePrecise_internal(AudioSourceInstance *voice, float *outputBuffer, unsigned int outputSamples, unsigned int outputStride,
 	                                           double outputSampleRate, unsigned int resampler, float *scratchBuffer, unsigned int scratchSize);
-	// Perform mixing for a specific bus
+	// Perform mixing for a specific bus. aScratch holds one voice's block, see VoiceScratch in soloud_mixing_internal.h
 	void mixBus_internal(float *aBuffer, unsigned int aSamplesToRead, unsigned int aBufferSize, float *aScratch, unsigned int aBus, float aSamplerate,
 	                     unsigned int aChannels, unsigned int aResampler);
 	// Find a free voice, stopping the oldest if no free voice is found.
@@ -657,7 +657,7 @@ public:
 	// Handle rest of initialization (called from backend)
 	void postinit_internal(unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aFlags, unsigned int aChannels);
 
-	// Returns mixed float samples in buffer. Called by the back-end, or user with null driver.
+	// Returns mixed float samples in buffer. Called by the back-end, or user with null driver. Any number of samples is fine.
 	void mix(void *aBuffer, unsigned int aSamples, mixing::SAMPLE_FORMAT aFormat = mixing::SAMPLE_FLOAT32);
 	// Same as mix(), but with the samples of each channel in a buffer of its own (aBuffers[0..channels-1]) instead of interleaved.
 	void mixPlanar(void *const *aBuffers, unsigned int aSamples, mixing::SAMPLE_FORMAT aFormat = mixing::SAMPLE_FLOAT32);

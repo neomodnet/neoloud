@@ -36,7 +36,6 @@ class BusInstance : public AudioSourceInstance
 {
 public:
 	Bus *mParent;
-	unsigned int mScratchSize;
 	AlignedFloatBuffer mScratch;
 
 	// Approximate volume for channels.
