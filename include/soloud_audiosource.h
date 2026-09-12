@@ -27,6 +27,7 @@ freely, subject to the following restrictions:
 
 #include <string.h>
 #include <array>
+#include <memory>
 
 #include "soloud_audiosource3d.h"
 #include "soloud_fader.h"
@@ -38,6 +39,7 @@ namespace SoLoud
 class AudioSource;
 class AudioSourceInstance;
 class AudioSourceInstance3dData;
+class TimeStretcher;
 
 class AudioCollider
 {
@@ -117,6 +119,8 @@ public:
 	Fader mVolumeFader;
 	// Fader for the relative play speed
 	Fader mRelativePlaySpeedFader;
+	// Fader for the tempo
+	Fader mTempoFader;
 	// Fader used to schedule pausing of the stream
 	Fader mPauseScheduler;
 	// Fader used to schedule stopping of the stream
@@ -155,6 +159,9 @@ public:
 	unsigned int mLoopWrapIndex;
 	double mLoopWrapFrame;
 
+	// Time-stretch stage, engaged by the first tempo or pitch shift other than 1.0 (see Soloud::setTempo and soloud_timestretch.h)
+	std::unique_ptr<TimeStretcher> mStretcher;
+
 	// Access a given channel of the resample buffer (mostly internal use).
 	[[nodiscard]] float *getResampleBuffer(unsigned int ch);
 
@@ -171,6 +178,7 @@ public:
 
 private:
 	friend class Soloud;
+	friend class TimeStretcher;
 	// Internal helper to empty the resample buffer: drops any queued source data and resets the read/fill positions
 	void clearResampleBuffer();
 	// Source frame the next getAudio() call will produce, given aRead frames pulled by a read still in progress

@@ -24,8 +24,10 @@ freely, subject to the following restrictions:
 
 #include "soloud.h"
 #include "soloud_audiosource.h"
+#include "soloud_timestretch.h"
 
 #include <cmath>
+#include <memory>
 
 // Direct voice operations (no mutexes - called from other functions)
 
@@ -47,6 +49,76 @@ result Soloud::setVoiceRelativePlaySpeed_internal(unsigned int aVoice, float aSp
 	}
 
 	return 0;
+}
+
+result Soloud::setVoiceTempo_internal(unsigned int aVoice, float aTempo)
+{
+	SOLOUD_ASSERT(aVoice < VOICE_COUNT);
+	SOLOUD_ASSERT(mInsideAudioThreadMutex);
+	if (aTempo <= 0.0f)
+	{
+		return INVALID_PARAMETER;
+	}
+
+	AudioSourceInstance *voice = mVoice[aVoice];
+	if (voice)
+	{
+		if (!voice->mStretcher && aTempo == 1.0f)
+			return SO_NO_ERROR;
+		engageVoiceTimeStretch_internal(voice);
+		voice->mStretcher->setTempo(aTempo);
+		if (aTempo == 1.0f && voice->mStretcher->getPitch() == 1.0f)
+			dropVoiceTimeStretch_internal(voice);
+	}
+	return SO_NO_ERROR;
+}
+
+result Soloud::setVoicePitchShift_internal(unsigned int aVoice, float aFactor)
+{
+	SOLOUD_ASSERT(aVoice < VOICE_COUNT);
+	SOLOUD_ASSERT(mInsideAudioThreadMutex);
+	if (aFactor <= 0.0f)
+	{
+		return INVALID_PARAMETER;
+	}
+
+	AudioSourceInstance *voice = mVoice[aVoice];
+	if (voice)
+	{
+		if (!voice->mStretcher && aFactor == 1.0f)
+			return SO_NO_ERROR;
+		engageVoiceTimeStretch_internal(voice);
+		voice->mStretcher->setPitch(aFactor);
+		if (aFactor == 1.0f && voice->mStretcher->getTempo() == 1.0)
+			dropVoiceTimeStretch_internal(voice);
+	}
+	return SO_NO_ERROR;
+}
+
+void Soloud::engageVoiceTimeStretch_internal(AudioSourceInstance *voice)
+{
+	SOLOUD_ASSERT(mInsideAudioThreadMutex);
+	if (!voice->mStretcher)
+		voice->mStretcher = std::make_unique<TimeStretcher>(voice->mChannels, voice->mBaseSamplerate);
+}
+
+void Soloud::dropVoiceTimeStretch_internal(AudioSourceInstance *voice)
+{
+	SOLOUD_ASSERT(mInsideAudioThreadMutex);
+	// the source audio the stage holds in flight can't be handed back, so the source is seeked back to the play position; a source that
+	// can't seek backwards keeps its stage, which is transparent at unity. a stage that hasn't primed yet holds nothing
+	if (voice->mStretcher->isPrimed())
+	{
+		time playPosition = voice->mStreamPosition;
+		voice->mStreamPosition = voice->getReadCursor(0) / voice->mBaseSamplerate;
+		if (voice->seek(playPosition, mScratch.mData, mScratchSize) != SO_NO_ERROR)
+		{
+			voice->mStreamPosition = playPosition;
+			return;
+		}
+		voice->clearResampleBuffer();
+	}
+	voice->mStretcher.reset();
 }
 
 void Soloud::setVoicePause_internal(unsigned int aVoice, int aPause)

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(SoLoud
-    VERSION 1.3.3
+    VERSION 1.4.0
     DESCRIPTION "SoLoud audio library"
     LANGUAGES C CXX)
 
@@ -183,6 +183,13 @@ if(NOT COMPILER_SUPPORTS_SSE2 AND NOT COMPILER_SUPPORTS_AVX2)
     list(APPEND SOLOUD_SIMD_DEFINITIONS SOLOUD_DISABLE_SIMD)
 endif()
 
+# the header-only stretch library runs up to 10x slower unoptimised, so its translation unit stays optimised in debug builds
+if(MSVC)
+    set_source_files_properties(src/core/soloud_timestretch.cpp PROPERTIES COMPILE_OPTIONS "/bigobj")
+else()
+    set_source_files_properties(src/core/soloud_timestretch.cpp PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>")
+endif()
+
 # create the library target
 if(BUILD_SHARED_LIBS)
     add_library(soloud SHARED ${SOLOUD_SOURCES})
@@ -346,6 +353,7 @@ if(SOLOUD_TESTS)
                     ${CMAKE_CURRENT_SOURCE_DIR}/include
                     ${CMAKE_CURRENT_SOURCE_DIR}/src
                     ${CMAKE_CURRENT_SOURCE_DIR}/src/intrin
+                    ${CMAKE_CURRENT_SOURCE_DIR}/vendored
                 )
 
                 # apply same compiler settings as main library

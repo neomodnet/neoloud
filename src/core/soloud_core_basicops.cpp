@@ -23,6 +23,7 @@ freely, subject to the following restrictions:
 */
 #include "soloud_audiosource.h"
 #include "soloud_internal.h"
+#include "soloud_timestretch.h"
 
 // Core "basic" operations - play, stop, etc
 
@@ -154,6 +155,8 @@ result Soloud::seek(handle aVoiceHandle, time aSeconds)
 	else
 	{
 		mVoice[ch]->clearResampleBuffer();
+		if (mVoice[ch]->mStretcher)
+			mVoice[ch]->mStretcher->invalidate();
 	}
 	FOR_ALL_VOICES_POST
 	return res;

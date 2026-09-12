@@ -221,6 +221,7 @@ static const TestEntry gTestTable[] = {
     {.name = "loudness",       .func = testLoudness,                .isBench = false, .usesLastKnown = false},
     {.name = "mixer",          .func = testMixer,                   .isBench = false, .usesLastKnown = false},
     {.name = "planar",         .func = testPlanarMix,               .isBench = false, .usesLastKnown = false},
+    {.name = "timestretch",    .func = testTimeStretch,             .isBench = false, .usesLastKnown = false},
     {.name = "bench",          .func = testSpeedThings,             .isBench = true,  .usesLastKnown = false},
     {.name = "bench-loudness", .func = benchLoudness,               .isBench = true,  .usesLastKnown = false},
 };

@@ -71,6 +71,25 @@ result Soloud::setRelativePlaySpeed(handle aVoiceHandle, float aSpeed)
 	return retVal;
 }
 
+result Soloud::setTempo(handle aVoiceHandle, float aTempo)
+{
+	result retVal = 0;
+	FOR_ALL_VOICES_PRE
+	mVoice[ch]->mTempoFader.mActive = 0;
+	retVal = setVoiceTempo_internal(ch, aTempo);
+	FOR_ALL_VOICES_POST
+	return retVal;
+}
+
+result Soloud::setPitchShift(handle aVoiceHandle, float aFactor)
+{
+	result retVal = 0;
+	FOR_ALL_VOICES_PRE
+	retVal = setVoicePitchShift_internal(ch, aFactor);
+	FOR_ALL_VOICES_POST
+	return retVal;
+}
+
 void Soloud::setSamplerate(handle aVoiceHandle, float aSamplerate)
 {
 	FOR_ALL_VOICES_PRE

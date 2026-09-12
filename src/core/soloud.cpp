@@ -28,7 +28,9 @@ freely, subject to the following restrictions:
 #include "soloud_internal.h"
 #include "soloud_mixing_internal.h"
 #include "soloud_thread.h"
+#include "soloud_timestretch.h"
 
+#include <climits>
 #include <cmath> // sin
 #include <stdio.h>
 #include <stdlib.h>
@@ -509,6 +511,105 @@ float *Soloud::calcFFT()
 	return mFFTData.data();
 }
 
+unsigned int Soloud::readSourceFrames_internal(AudioSourceInstance *voice, float *aBuffer, unsigned int aFrames, unsigned int aStride, float *aScratch,
+                                               unsigned int aScratchSize, unsigned int &aWrapOffset, double &aWrapFrame)
+{
+	aWrapOffset = UINT_MAX;
+	unsigned int samplesRead = voice->getAudio(aBuffer, aFrames, aStride);
+
+	// Handle looping: continue reading from loop point if we reach the end
+	if (samplesRead < aFrames && (voice->mFlags & AudioSourceInstance::LOOPING))
+	{
+		// crossfade ~1.5ms at 44.1kHz, long enough to eliminate clicks, but short enough to not be noticeable
+		const unsigned int LOOP_CROSSFADE_SAMPLES = 64;
+
+		unsigned int preLoopSamples = samplesRead;
+
+		// Save the last sample per channel for crossfade continuity
+		float lastEndSamples[MAX_CHANNELS];
+		for (unsigned int ch = 0; ch < voice->mChannels; ch++)
+		{
+			lastEndSamples[ch] = (preLoopSamples > 0) ? aBuffer[ch * aStride + preLoopSamples - 1] : 0.0f;
+		}
+
+		// the generic tape seek discards audio into the scratch it is given, so hand it the scratch rather than the buffer holding the
+		// pre-loop samples (when there is such space)
+		float *seekScratch = aScratchSize >= voice->mChannels ? aScratch : aBuffer;
+		unsigned int seekScratchSize = aScratchSize >= voice->mChannels ? aScratchSize : aStride * voice->mChannels;
+
+		// the instance's seek measures from mStreamPosition, so point it at the source's next frame for each call, then put the play
+		// position back: the loop point only takes effect once the read position gets through the queued pre-loop audio, so the caller
+		// records where its frames will land instead
+		time playPosition = voice->mStreamPosition;
+		double cursorBase = voice->getReadCursor(0); // source frame of aBuffer[cursorOffset]
+		unsigned int cursorOffset = 0;
+		while (samplesRead < aFrames)
+		{
+			voice->mStreamPosition = (cursorBase + (samplesRead - cursorOffset)) / voice->mBaseSamplerate;
+			result seekResult = voice->seek(voice->mLoopPoint, seekScratch, seekScratchSize);
+			if (seekResult == SO_NO_ERROR)
+			{
+				aWrapOffset = samplesRead;
+				aWrapFrame = voice->mStreamPosition * voice->mBaseSamplerate;
+				cursorBase = aWrapFrame;
+				cursorOffset = samplesRead;
+			}
+			voice->mStreamPosition = playPosition;
+			if (seekResult != SO_NO_ERROR)
+				break;
+
+			voice->mLoopCount++;
+			unsigned int remaining = aFrames - samplesRead;
+
+			// getAudio implementations use aSamplesToRead as the channel stride,
+			// so we need remaining * channels floats of space.
+			if (remaining * voice->mChannels > aScratchSize)
+			{
+				remaining = aScratchSize / voice->mChannels;
+			}
+
+			if (remaining == 0)
+				break;
+
+			unsigned int loopSamples = voice->getAudio(aScratch, remaining, remaining);
+
+			if (loopSamples == 0)
+				break;
+
+			// Copy loop samples to aBuffer (using remaining as source stride
+			// since that's what getAudio uses internally)
+			for (size_t ch = 0; ch < voice->mChannels; ch++)
+			{
+				memcpy(aBuffer + ch * aStride + samplesRead, aScratch + ch * remaining, loopSamples * sizeof(float));
+			}
+
+			// Apply crossfade at the loop boundary (only on the first iteration after seeking)
+			if (samplesRead == preLoopSamples && preLoopSamples > 0 && loopSamples > 0)
+			{
+				unsigned int crossfadeLen = (loopSamples < LOOP_CROSSFADE_SAMPLES) ? loopSamples : LOOP_CROSSFADE_SAMPLES;
+
+				for (size_t ch = 0; ch < voice->mChannels; ch++)
+				{
+					float lastEndSample = lastEndSamples[ch];
+					float *loopStart = aBuffer + ch * aStride + preLoopSamples;
+
+					for (unsigned int i = 0; i < crossfadeLen; i++)
+					{
+						// t=0 at boundary (output = lastEndSample), t=1 at end (output = loopStart)
+						float t = (float)(i + 1) / (float)(crossfadeLen + 1);
+						// Fade from the last end sample into the loop samples
+						loopStart[i] = lastEndSample * (1.0f - t) + loopStart[i] * t;
+					}
+				}
+			}
+
+			samplesRead += loopSamples;
+		}
+	}
+
+	return samplesRead;
+}
+
 // Helper function to ensure we have enough source data in the resample buffer
 unsigned int Soloud::ensureSourceData_internal(AudioSourceInstance *voice, unsigned int samplesNeeded, float *scratchBuffer, unsigned int scratchSize)
 {
@@ -590,95 +691,23 @@ unsigned int Soloud::ensureSourceData_internal(AudioSourceInstance *voice, unsig
 					samplesToRead = alignedBufferSize;
 			}
 
-			samplesRead = voice->getAudio(channelBuffer, samplesToRead, alignedBufferSize);
-
-			// Handle looping: continue reading from loop point if we reach the end
-			if (samplesRead < samplesToRead && (voice->mFlags & AudioSourceInstance::LOOPING))
+			if (voice->mStretcher)
 			{
-				// crossfade ~1.5ms at 44.1kHz, long enough to eliminate clicks, but short enough to not be noticeable
-				const unsigned int LOOP_CROSSFADE_SAMPLES = 64;
-
-				unsigned int preLoopSamples = samplesRead;
-
-				// Save the last sample per channel for crossfade continuity
-				float lastEndSamples[MAX_CHANNELS];
-				for (unsigned int ch = 0; ch < voice->mChannels; ch++)
-				{
-					lastEndSamples[ch] = (preLoopSamples > 0) ? channelBuffer[ch * alignedBufferSize + preLoopSamples - 1] : 0.0f;
-				}
-
+				samplesRead = voice->mStretcher->produce(voice, channelBuffer, samplesToRead, alignedBufferSize);
+			}
+			else
+			{
+				// the scratch past the main buffer is the loop path's
 				unsigned int mainBufferEnd = alignedBufferSize * voice->mChannels;
-				unsigned int tempSpaceAvailable = scratchSize - mainBufferEnd;
-				float *loopTempBuffer = channelBuffer + mainBufferEnd;
-				// the generic tape seek discards audio into the scratch it is given, so hand it the space past the main buffer
-				// rather than the buffer holding the pre-loop samples (when there is such space)
-				float *seekScratch = tempSpaceAvailable >= voice->mChannels ? loopTempBuffer : channelBuffer;
-				unsigned int seekScratchSize = tempSpaceAvailable >= voice->mChannels ? tempSpaceAvailable : mainBufferEnd;
-
-				time playPosition = voice->mStreamPosition;
-				while (samplesRead < samplesToRead)
+				unsigned int wrapOffset = UINT_MAX;
+				double wrapFrame = 0.0;
+				samplesRead = readSourceFrames_internal(voice, channelBuffer, samplesToRead, alignedBufferSize, channelBuffer + mainBufferEnd,
+				                                        scratchSize - mainBufferEnd, wrapOffset, wrapFrame);
+				if (wrapOffset != UINT_MAX)
 				{
-					// the instance's seek measures from mStreamPosition, so point it at the source's next frame for the call, then put
-					// the play position back: the loop point only takes effect once the read position gets through the queued pre-loop
-					// audio, so remember where its frames will land instead
-					voice->mStreamPosition = voice->getReadCursor(samplesRead) / voice->mBaseSamplerate;
-					result seekResult = voice->seek(voice->mLoopPoint, seekScratch, seekScratchSize);
-					if (seekResult == SO_NO_ERROR)
-					{
-						voice->mLoopWrapPending = true;
-						voice->mLoopWrapIndex = voice->mResampleBufferFill + samplesRead;
-						voice->mLoopWrapFrame = voice->mStreamPosition * voice->mBaseSamplerate;
-					}
-					voice->mStreamPosition = playPosition;
-					if (seekResult != SO_NO_ERROR)
-						break;
-
-					voice->mLoopCount++;
-					unsigned int remaining = samplesToRead - samplesRead;
-
-					// getAudio implementations use aSamplesToRead as the channel stride,
-					// so we need remaining * channels floats of space.
-					if (remaining * voice->mChannels > tempSpaceAvailable)
-					{
-						remaining = tempSpaceAvailable / voice->mChannels;
-					}
-
-					if (remaining == 0)
-						break;
-
-					unsigned int loopSamples = voice->getAudio(loopTempBuffer, remaining, remaining);
-
-					if (loopSamples == 0)
-						break;
-
-					// Copy loop samples to channelBuffer (using remaining as source stride
-					// since that's what getAudio uses internally)
-					for (size_t ch = 0; ch < voice->mChannels; ch++)
-					{
-						memcpy(channelBuffer + ch * alignedBufferSize + samplesRead, loopTempBuffer + ch * remaining, loopSamples * sizeof(float));
-					}
-
-					// Apply crossfade at the loop boundary (only on the first iteration after seeking)
-					if (samplesRead == preLoopSamples && preLoopSamples > 0 && loopSamples > 0)
-					{
-						unsigned int crossfadeLen = (loopSamples < LOOP_CROSSFADE_SAMPLES) ? loopSamples : LOOP_CROSSFADE_SAMPLES;
-
-						for (size_t ch = 0; ch < voice->mChannels; ch++)
-						{
-							float lastEndSample = lastEndSamples[ch];
-							float *loopStart = channelBuffer + ch * alignedBufferSize + preLoopSamples;
-
-							for (unsigned int i = 0; i < crossfadeLen; i++)
-							{
-								// t=0 at boundary (output = lastEndSample), t=1 at end (output = loopStart)
-								float t = (float)(i + 1) / (float)(crossfadeLen + 1);
-								// Fade from the last end sample into the loop samples
-								loopStart[i] = lastEndSample * (1.0f - t) + loopStart[i] * t;
-							}
-						}
-					}
-
-					samplesRead += loopSamples;
+					voice->mLoopWrapPending = true;
+					voice->mLoopWrapIndex = voice->mResampleBufferFill + wrapOffset;
+					voice->mLoopWrapFrame = wrapFrame;
 				}
 			}
 
@@ -813,16 +842,24 @@ unsigned int Soloud::resampleVoicePrecise_internal(AudioSourceInstance *voice,
 		voice->mPreciseSrcPosition -= integralConsumed; // Keep fractional part for precise positioning
 	}
 
-	// the stream position follows what was consumed, and continues from the loop point once the read position reaches a queued loop wrap
+	// the stream position follows what was consumed (each queued frame spans one source frame, or the tempo's worth of them when the
+	// time-stretch stage produced it), and continues from the loop point once the read position reaches a queued loop wrap
 	double readPos = voice->mResampleBufferPos + voice->mPreciseSrcPosition;
+	bool stretched = voice->mStretcher && voice->mStretcher->isPrimed();
 	if (voice->mLoopWrapPending && readPos >= voice->mLoopWrapIndex)
 	{
-		voice->mStreamPosition = (voice->mLoopWrapFrame + (readPos - voice->mLoopWrapIndex)) / voice->mBaseSamplerate;
+		double sinceWrap = readPos - voice->mLoopWrapIndex;
+		if (stretched)
+			sinceWrap = voice->mStretcher->queuedSpan(voice->mResampleBufferFill, voice->mLoopWrapIndex, readPos);
+		voice->mStreamPosition = (voice->mLoopWrapFrame + sinceWrap) / voice->mBaseSamplerate;
 		voice->mLoopWrapPending = false;
 	}
 	else
 	{
-		voice->mStreamPosition += totalAdvance / voice->mBaseSamplerate;
+		double advance = totalAdvance;
+		if (stretched)
+			advance = voice->mStretcher->queuedSpan(voice->mResampleBufferFill, readPos - totalAdvance, readPos);
+		voice->mStreamPosition += advance / voice->mBaseSamplerate;
 	}
 
 	return safeOutputCount;
@@ -982,9 +1019,11 @@ void Soloud::mixBus_internal(float *aBuffer, unsigned int aSamplesToRead, unsign
 		const unsigned int lookaheadSamples =
 		    (aResampler == RESAMPLER_CATMULLROM) ? ResamplingConstants::CATMULLROM_LOOKAHEAD : ResamplingConstants::LINEAR_LOOKAHEAD;
 		const bool bufferNearEmpty = remainingSamples <= lookaheadSamples;
-		const bool stuckNoProgress = (totalProduced == 0) && voice->hasEnded();
+		// a time-stretch stage still holds the source's last audio for a while after the source has ended
+		const bool sourceDone = voice->hasEnded() && (!voice->mStretcher || voice->mStretcher->drained());
+		const bool stuckNoProgress = (totalProduced == 0) && sourceDone;
 
-		if (!(voice->mFlags & (AudioSourceInstance::LOOPING | AudioSourceInstance::DISABLE_AUTOSTOP)) && voice->hasEnded() && (bufferNearEmpty || stuckNoProgress))
+		if (!(voice->mFlags & (AudioSourceInstance::LOOPING | AudioSourceInstance::DISABLE_AUTOSTOP)) && sourceDone && (bufferNearEmpty || stuckNoProgress))
 		{
 			stopVoice_internal(mActiveVoice[voiceIdx]);
 		}
@@ -1152,6 +1191,12 @@ void Soloud::mix_internal(unsigned int aSamples, unsigned int aStride)
 		{
 			float speed = currentVoice->mRelativePlaySpeedFader.get(currentVoice->mStreamTime);
 			setVoiceRelativePlaySpeed_internal(i, speed);
+		}
+
+		if (currentVoice->mTempoFader.mActive > 0)
+		{
+			float tempo = currentVoice->mTempoFader.get(currentVoice->mStreamTime);
+			setVoiceTempo_internal(i, tempo);
 		}
 
 		volume[0] = currentVoice->mOverallVolume;

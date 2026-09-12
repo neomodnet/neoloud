@@ -10,5 +10,7 @@ SoLoud is an easy to use, free, portable c/c++ audio engine for games.
 
 Zlib/LibPng licensed. Portable. Easy.
 
+This fork adds per-voice time-stretching and pitch-shifting (`setTempo`, `setPitchShift`) on top of the stock engine, using [Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) (MIT).
+
 Official site with documentation can be found at:
  http://soloud-audio.com

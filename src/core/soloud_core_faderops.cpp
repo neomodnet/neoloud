@@ -24,6 +24,7 @@ freely, subject to the following restrictions:
 
 #include "soloud_audiosource.h"
 #include "soloud_internal.h"
+#include "soloud_timestretch.h"
 
 // Core operations related to faders (not including filters)
 
@@ -94,6 +95,21 @@ void Soloud::fadeRelativePlaySpeed(handle aVoiceHandle, float aTo, time aTime)
 	FOR_ALL_VOICES_POST
 }
 
+void Soloud::fadeTempo(handle aVoiceHandle, float aTo, time aTime)
+{
+	float from = getTempo(aVoiceHandle);
+	if (aTime <= 0 || aTo == from || aTo <= 0)
+	{
+		setTempo(aVoiceHandle, aTo);
+		return;
+	}
+	FOR_ALL_VOICES_PRE
+	// engaged here rather than by the audio thread's first step of the fade
+	engageVoiceTimeStretch_internal(mVoice[ch]);
+	mVoice[ch]->mTempoFader.set(from, aTo, aTime, mVoice[ch]->mStreamTime);
+	FOR_ALL_VOICES_POST
+}
+
 void Soloud::fadeGlobalVolume(float aTo, time aTime)
 {
 	lockAudioMutex_internal();
@@ -130,6 +146,20 @@ void Soloud::oscillatePan(handle aVoiceHandle, float aFrom, float aTo, time aTim
 
 	FOR_ALL_VOICES_PRE
 	mVoice[ch]->mPanFader.setLFO(aFrom, aTo, aTime, mVoice[ch]->mStreamTime);
+	FOR_ALL_VOICES_POST
+}
+
+void Soloud::oscillateTempo(handle aVoiceHandle, float aFrom, float aTo, time aTime)
+{
+	if (aTime <= 0 || aTo == aFrom || aFrom <= 0 || aTo <= 0)
+	{
+		setTempo(aVoiceHandle, aTo);
+		return;
+	}
+
+	FOR_ALL_VOICES_PRE
+	engageVoiceTimeStretch_internal(mVoice[ch]);
+	mVoice[ch]->mTempoFader.setLFO(aFrom, aTo, aTime, mVoice[ch]->mStreamTime);
 	FOR_ALL_VOICES_POST
 }
 

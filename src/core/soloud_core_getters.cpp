@@ -25,6 +25,7 @@ freely, subject to the following restrictions:
 #include "soloud.h"
 #include "soloud_audiosource.h"
 #include "soloud_internal.h"
+#include "soloud_timestretch.h"
 
 // Getters - return information about SoLoud state
 
@@ -266,6 +267,24 @@ float Soloud::getRelativePlaySpeed(handle aVoiceHandle)
 		return 1;
 	}
 	float v = mVoice[ch]->mSetRelativePlaySpeed;
+	unlockAudioMutex_internal();
+	return v;
+}
+
+float Soloud::getTempo(handle aVoiceHandle)
+{
+	lockAudioMutex_internal();
+	int ch = getVoiceFromHandle_internal(aVoiceHandle);
+	float v = (ch != -1 && mVoice[ch]->mStretcher) ? (float)mVoice[ch]->mStretcher->getTempo() : 1.0f;
+	unlockAudioMutex_internal();
+	return v;
+}
+
+float Soloud::getPitchShift(handle aVoiceHandle)
+{
+	lockAudioMutex_internal();
+	int ch = getVoiceFromHandle_internal(aVoiceHandle);
+	float v = (ch != -1 && mVoice[ch]->mStretcher) ? mVoice[ch]->mStretcher->getPitch() : 1.0f;
 	unlockAudioMutex_internal();
 	return v;
 }

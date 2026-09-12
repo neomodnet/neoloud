@@ -222,6 +222,7 @@ void testLoudness();
 void testRelativePlaySpeedTiming();
 void testMixer();
 void testPlanarMix();
+void testTimeStretch();
 void testSpeedThings();
 void benchLoudness();
 

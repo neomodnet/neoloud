@@ -24,6 +24,7 @@ freely, subject to the following restrictions:
 
 #include "soloud_audiosource.h"
 #include "soloud.h"
+#include "soloud_timestretch.h"
 
 #include <climits>
 #include <string.h>
@@ -356,6 +357,14 @@ void AudioSourceInstance::clearResampleBuffer()
 double AudioSourceInstance::getReadCursor(unsigned int aRead) const
 {
 	double queueEnd = (double)mResampleBufferFill + aRead;
+	if (mStretcher && mStretcher->isPrimed())
+	{
+		// what's queued is stretched output spanning tempo source frames each, and the stretcher holds more source frames in flight
+		if (mLoopWrapPending)
+			return mLoopWrapFrame + mStretcher->fedSinceWrap() + aRead;
+		return mStreamPosition * mBaseSamplerate + mStretcher->queuedSpan(mResampleBufferFill, mResampleBufferPos + mPreciseSrcPosition, mResampleBufferFill) +
+		       mStretcher->inFlightSourceFrames() + aRead;
+	}
 	if (mLoopWrapPending)
 		return mLoopWrapFrame + (queueEnd - mLoopWrapIndex);
 	return mStreamPosition * mBaseSamplerate + (queueEnd - mResampleBufferPos - mPreciseSrcPosition);

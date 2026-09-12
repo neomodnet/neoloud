@@ -388,6 +388,10 @@ public:
 	bool isValidVoiceHandle(handle aVoiceHandle);
 	// Get current relative play speed.
 	float getRelativePlaySpeed(handle aVoiceHandle);
+	// Get current tempo (see setTempo); 1.0 unless set.
+	float getTempo(handle aVoiceHandle);
+	// Get current pitch shift (see setPitchShift); 1.0 unless set.
+	float getPitchShift(handle aVoiceHandle);
 	// Get current post-clip scaler value.
 	float getPostClipScaler() const;
 	// Get the current main resampler
@@ -425,6 +429,13 @@ public:
 	void setPauseAll(bool aPause);
 	// Set the relative play speed
 	result setRelativePlaySpeed(handle aVoiceHandle, float aSpeed);
+	// Set the tempo: play at aTempo times the speed with the pitch kept (2.0 plays twice as fast; 1.0 is the default), on top of the relative
+	// play speed, which changes speed and pitch together. The first tempo or pitch shift other than 1.0 engages the voice's time-stretch stage,
+	// which is primed with about 150 ms of source audio in the audio thread's next mix, and again after every seek() of that voice.
+	result setTempo(handle aVoiceHandle, float aTempo);
+	// Set the pitch shift: play with the pitch multiplied by aFactor and the speed kept (2.0 = one octave up, 0.5 = one octave down; 1.0 is the
+	// default), on top of the relative play speed. See setTempo.
+	result setPitchShift(handle aVoiceHandle, float aFactor);
 	// Set the voice protection state
 	void setProtectVoice(handle aVoiceHandle, bool aProtect);
 	// Set the sample rate
@@ -446,6 +457,8 @@ public:
 	void fadePan(handle aVoiceHandle, float aTo, time aTime);
 	// Set up relative play speed fader
 	void fadeRelativePlaySpeed(handle aVoiceHandle, float aTo, time aTime);
+	// Set up tempo fader (see setTempo)
+	void fadeTempo(handle aVoiceHandle, float aTo, time aTime);
 	// Set up global volume fader
 	void fadeGlobalVolume(float aTo, time aTime);
 	// Schedule a stream to pause
@@ -457,6 +470,8 @@ public:
 	void oscillateVolume(handle aVoiceHandle, float aFrom, float aTo, time aTime);
 	// Set up panning oscillator
 	void oscillatePan(handle aVoiceHandle, float aFrom, float aTo, time aTime);
+	// Set up tempo oscillator (see setTempo)
+	void oscillateTempo(handle aVoiceHandle, float aFrom, float aTo, time aTime);
 	// Set up relative play speed oscillator
 	void oscillateRelativePlaySpeed(handle aVoiceHandle, float aFrom, float aTo, time aTime);
 	// Set up global volume oscillator
@@ -541,6 +556,12 @@ public:
 	void calcActiveVoices_internal();
 	// Other internal mixing helpers
 	static unsigned int ensureSourceData_internal(AudioSourceInstance *voice, unsigned int samplesNeeded, float *scratchBuffer, unsigned int scratchSize);
+	// Read aFrames frames of voice's source into aBuffer (channel-separated at stride aStride), continuing from the loop point when a looping
+	// source runs out: aScratch is where that path reads the post-loop frames, and where a tape seek discards audio. Returns the frames read.
+	// A loop wrap in the read is reported through aWrapOffset (the frame of aBuffer where the audio from source frame aWrapFrame starts, or
+	// UINT_MAX when there was none) for the caller to record against its own queue, since where those frames land differs per caller.
+	static unsigned int readSourceFrames_internal(AudioSourceInstance *voice, float *aBuffer, unsigned int aFrames, unsigned int aStride, float *aScratch,
+	                                              unsigned int aScratchSize, unsigned int &aWrapOffset, double &aWrapFrame);
 	unsigned int resampleVoicePrecise_internal(AudioSourceInstance *voice, float *outputBuffer, unsigned int outputSamples, unsigned int outputStride,
 	                                           double outputSampleRate, unsigned int resampler, float *scratchBuffer, unsigned int scratchSize);
 	// Perform mixing for a specific bus. aScratch holds one voice's block, see VoiceScratch in soloud_mixing_internal.h
@@ -558,6 +579,13 @@ public:
 	void setVoicePan_internal(unsigned int aVoice, float aPan);
 	// Set voice (not handle) relative play speed.
 	result setVoiceRelativePlaySpeed_internal(unsigned int aVoice, float aSpeed);
+	// Set voice (not handle) tempo / pitch shift, engaging its time-stretch stage on the first value other than 1.0.
+	result setVoiceTempo_internal(unsigned int aVoice, float aTempo);
+	result setVoicePitchShift_internal(unsigned int aVoice, float aFactor);
+	// Engage a voice's time-stretch stage (at unity, until a tempo or pitch shift is set) if it has none.
+	void engageVoiceTimeStretch_internal(AudioSourceInstance *voice);
+	// Drop a voice's time-stretch stage once it is back at unity tempo and pitch shift, seeking the source back to the play position.
+	void dropVoiceTimeStretch_internal(AudioSourceInstance *voice);
 	// Set voice (not handle) volume.
 	void setVoiceVolume_internal(unsigned int aVoice, float aVolume);
 	// Set voice (not handle) pause state.
