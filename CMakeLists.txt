@@ -247,8 +247,9 @@ else()
             WINDOWS_VERSION
         )
     endif()
-    # disable exceptions for gcc/clang
-    target_compile_options(soloud PRIVATE -fno-exceptions)
+    # disable exceptions for gcc/clang, and
+    # floating-point exception tracking (gcc enables it by default and prevents some auto-vectorization)
+    target_compile_options(soloud PRIVATE -fno-exceptions -fno-trapping-math)
 
     # threading
     find_package(Threads REQUIRED)
@@ -368,7 +369,7 @@ if(SOLOUD_TESTS)
                         target_link_options(${TEST_NAME} PRIVATE -Wl,--subsystem,console)
                         target_link_options(${TEST_NAME} PRIVATE -static-libgcc -static-libstdc++)
                     endif()
-                    target_compile_options(${TEST_NAME} PRIVATE -fno-exceptions)
+                    target_compile_options(${TEST_NAME} PRIVATE -fno-exceptions -fno-trapping-math)
                 endif()
 
 
