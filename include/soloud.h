@@ -344,7 +344,7 @@ public:
 	// Start playing a sound without any panning. It will be played at full volume.
 	handle playBackground(AudioSource &aSound, float aVolume = -1.0f, bool aPaused = 0, unsigned int aBus = 0);
 
-	// Seek the audio stream to certain point in time. Some streams can't seek backwards. Relative play speed affects time.
+	// Seek the audio stream to certain point in time. Some streams can't seek backwards.
 	result seek(handle aVoiceHandle, time aSeconds);
 	// Stop the sound.
 	void stop(handle aVoiceHandle);

@@ -88,7 +88,10 @@ AudioSourceInstance::AudioSourceInstance()
       mLoopPoint(0),
       mResampleBufferFill(0),
       mResampleBufferPos(0),
-      mPreciseSrcPosition(0.0)
+      mPreciseSrcPosition(0.0),
+      mLoopWrapPending(false),
+      mLoopWrapIndex(0),
+      mLoopWrapFrame(0.0)
 {
 	// Default all volumes to 1.0 so sound behind N mix busses isn't super quiet.
 	mChannelVolume.fill(1.f);
@@ -112,14 +115,8 @@ void AudioSourceInstance::init(AudioSource &aSource, int aPlayIndex)
 	mStreamPosition = 0.0f;
 	mLoopPoint = aSource.mLoopPoint;
 
-	mResampleBufferFill = 0;
-	mResampleBufferPos = 0;
-	mPreciseSrcPosition = 0.0;
-
 	// Grow the resample buffer to cover this source's channel count (only heap-allocates for >INLINE_CHANNELS channels)
 	mResampleBuffer.ensureCapacity(mChannels * RESAMPLE_BUFFER_SIZE);
-
-	// fully zero out the resample buffer
 	clearResampleBuffer();
 
 	if (aSource.mFlags & AudioSource::SHOULD_LOOP)
@@ -155,17 +152,18 @@ result AudioSourceInstance::rewind()
 
 result AudioSourceInstance::seek(double aSeconds, float *mScratch, unsigned int mScratchSize)
 {
-	double offset = aSeconds - mStreamPosition;
-	if (offset <= 0)
+	// mStreamPosition is where the next frame comes from (the engine points it at the source's read cursor for this call)
+	int targetFrame = (int)floor(aSeconds * mBaseSamplerate);
+	int samples_to_discard = targetFrame - (int)lround(mStreamPosition * mBaseSamplerate);
+	if (samples_to_discard < 0)
 	{
 		if (rewind() != SO_NO_ERROR)
 		{
 			// can't do generic seek backwards unless we can rewind.
 			return NOT_IMPLEMENTED;
 		}
-		offset = aSeconds;
+		samples_to_discard = targetFrame;
 	}
-	int samples_to_discard = (int)floor(mSamplerate * offset);
 
 	while (samples_to_discard)
 	{
@@ -175,7 +173,7 @@ result AudioSourceInstance::seek(double aSeconds, float *mScratch, unsigned int 
 		getAudio(mScratch, samples, samples);
 		samples_to_discard -= samples;
 	}
-	mStreamPosition = aSeconds;
+	mStreamPosition = targetFrame / mBaseSamplerate;
 	return SO_NO_ERROR;
 }
 
@@ -346,21 +344,21 @@ float *AudioSourceInstance::getResampleBuffer(unsigned int ch)
 	return mResampleBuffer.get() + ch * RESAMPLE_BUFFER_SIZE;
 }
 
-void AudioSourceInstance::clearResampleBuffer(unsigned long amount)
+void AudioSourceInstance::clearResampleBuffer()
 {
-	if (amount > 0 && amount < (RESAMPLE_BUFFER_SIZE * sizeof(float)))
-	{
-		// Clear only the specified amount of resample buffer data
-		for (unsigned int ch = 0; ch < mChannels; ch++)
-		{
-			memset(getResampleBuffer(ch), 0, amount);
-		}
-	}
-	else
-	{
-		// Clear all resample buffer data from all channels
-		memset(mResampleBuffer.get(), 0, mChannels * RESAMPLE_BUFFER_SIZE * sizeof(float));
-	}
+	mResampleBufferFill = 0;
+	mResampleBufferPos = 0;
+	mPreciseSrcPosition = 0.0;
+	mLoopWrapPending = false;
+	memset(mResampleBuffer.get(), 0, mChannels * RESAMPLE_BUFFER_SIZE * sizeof(float));
+}
+
+double AudioSourceInstance::getReadCursor(unsigned int aRead) const
+{
+	double queueEnd = (double)mResampleBufferFill + aRead;
+	if (mLoopWrapPending)
+		return mLoopWrapFrame + (queueEnd - mLoopWrapIndex);
+	return mStreamPosition * mBaseSamplerate + (queueEnd - mResampleBufferPos - mPreciseSrcPosition);
 }
 
 }; // namespace SoLoud

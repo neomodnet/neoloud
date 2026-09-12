@@ -217,6 +217,7 @@ void test3d();
 void testFilters();
 void testCore();
 void testSpeech();
+void testPosition();
 void testLoudness();
 void testRelativePlaySpeedTiming();
 void testMixer();

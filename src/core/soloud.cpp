@@ -528,12 +528,16 @@ unsigned int Soloud::ensureSourceData_internal(AudioSourceInstance *voice, unsig
 		{
 			memmove(voice->getResampleBuffer(ch), voice->getResampleBuffer(ch) + voice->mResampleBufferPos, availableSamples * sizeof(float));
 		}
+		if (voice->mLoopWrapPending)
+			voice->mLoopWrapIndex -= voice->mResampleBufferPos; // the wrap moves down with the data
 		voice->mResampleBufferFill = availableSamples;
 		voice->mResampleBufferPos = 0;
 	}
 	else if (availableSamples == 0)
 	{
 		// Buffer is empty, reset positions
+		if (voice->mLoopWrapPending)
+			voice->mLoopWrapIndex -= voice->mResampleBufferPos;
 		voice->mResampleBufferFill = 0;
 		voice->mResampleBufferPos = 0;
 	}
@@ -602,16 +606,37 @@ unsigned int Soloud::ensureSourceData_internal(AudioSourceInstance *voice, unsig
 					lastEndSamples[ch] = (preLoopSamples > 0) ? channelBuffer[ch * alignedBufferSize + preLoopSamples - 1] : 0.0f;
 				}
 
-				while (samplesRead < samplesToRead && voice->seek(voice->mLoopPoint, channelBuffer, samplesToRead * voice->mChannels) == SO_NO_ERROR)
+				unsigned int mainBufferEnd = alignedBufferSize * voice->mChannels;
+				unsigned int tempSpaceAvailable = scratchSize - mainBufferEnd;
+				float *loopTempBuffer = channelBuffer + mainBufferEnd;
+				// the generic tape seek discards audio into the scratch it is given, so hand it the space past the main buffer
+				// rather than the buffer holding the pre-loop samples (when there is such space)
+				float *seekScratch = tempSpaceAvailable >= voice->mChannels ? loopTempBuffer : channelBuffer;
+				unsigned int seekScratchSize = tempSpaceAvailable >= voice->mChannels ? tempSpaceAvailable : mainBufferEnd;
+
+				time playPosition = voice->mStreamPosition;
+				while (samplesRead < samplesToRead)
 				{
+					// the instance's seek measures from mStreamPosition, so point it at the source's next frame for the call, then put
+					// the play position back: the loop point only takes effect once the read position gets through the queued pre-loop
+					// audio, so remember where its frames will land instead
+					voice->mStreamPosition = voice->getReadCursor(samplesRead) / voice->mBaseSamplerate;
+					result seekResult = voice->seek(voice->mLoopPoint, seekScratch, seekScratchSize);
+					if (seekResult == SO_NO_ERROR)
+					{
+						voice->mLoopWrapPending = true;
+						voice->mLoopWrapIndex = voice->mResampleBufferFill + samplesRead;
+						voice->mLoopWrapFrame = voice->mStreamPosition * voice->mBaseSamplerate;
+					}
+					voice->mStreamPosition = playPosition;
+					if (seekResult != SO_NO_ERROR)
+						break;
+
 					voice->mLoopCount++;
 					unsigned int remaining = samplesToRead - samplesRead;
 
-					// Check available space for loop temp data.
 					// getAudio implementations use aSamplesToRead as the channel stride,
 					// so we need remaining * channels floats of space.
-					unsigned int mainBufferEnd = alignedBufferSize * voice->mChannels;
-					unsigned int tempSpaceAvailable = scratchSize - mainBufferEnd;
 					if (remaining * voice->mChannels > tempSpaceAvailable)
 					{
 						remaining = tempSpaceAvailable / voice->mChannels;
@@ -620,7 +645,6 @@ unsigned int Soloud::ensureSourceData_internal(AudioSourceInstance *voice, unsig
 					if (remaining == 0)
 						break;
 
-					float *loopTempBuffer = channelBuffer + mainBufferEnd;
 					unsigned int loopSamples = voice->getAudio(loopTempBuffer, remaining, remaining);
 
 					if (loopSamples == 0)
@@ -724,7 +748,6 @@ unsigned int Soloud::resampleVoicePrecise_internal(AudioSourceInstance *voice,
 
 	// For chunked processing, we may not be able to produce all requested samples
 	// if we run out of source data. This is normal and prevents excessive buffering.
-	unsigned int samplesProduced = 0;
 	unsigned int samplesToProcess = outputSamples;
 
 	// Limit processing to one chunk worth of output to maintain low latency
@@ -759,38 +782,26 @@ unsigned int Soloud::resampleVoicePrecise_internal(AudioSourceInstance *voice,
 	if (safeOutputCount > samplesToProcess)
 		safeOutputCount = samplesToProcess;
 
-	// If no output buffer provided (tick-only mode), just advance position
-	if (!outputBuffer)
-	{
-		voice->mPreciseSrcPosition += safeOutputCount * stepSize;
-
-		// Update buffer position for consumed integer samples
-		unsigned int integralConsumed = (unsigned int)floor(voice->mPreciseSrcPosition);
-		if (integralConsumed > 0 && integralConsumed <= availableInput)
-		{
-			voice->mResampleBufferPos += integralConsumed;
-			voice->mPreciseSrcPosition -= integralConsumed;
-		}
-		return safeOutputCount;
-	}
-
 	if (safeOutputCount == 0)
 		return 0;
 
-	// Resample all channels using SIMD-optimized implementation
-	// Create offset pointers for each channel (accounting for current read position)
-	float *srcChannelsOffset[MAX_CHANNELS];
-	for (unsigned int ch = 0; ch < voice->mChannels; ch++)
+	// With no output buffer (tick-only mode) only the position advances
+	if (outputBuffer)
 	{
-		srcChannelsOffset[ch] = voice->getResampleBuffer(ch) + voice->mResampleBufferPos;
+		// Resample all channels using SIMD-optimized implementation
+		// Create offset pointers for each channel (accounting for current read position)
+		float *srcChannelsOffset[MAX_CHANNELS];
+		for (unsigned int ch = 0; ch < voice->mChannels; ch++)
+		{
+			srcChannelsOffset[ch] = voice->getResampleBuffer(ch) + voice->mResampleBufferPos;
+		}
+
+		mMixer->resample_channels(srcChannelsOffset, outputBuffer, outputStride, voice->mChannels, safeOutputCount, voice->mPreciseSrcPosition, stepSize,
+		                          availableInput, lookaheadSamples);
 	}
 
-	samplesProduced = safeOutputCount; // Always process this amount
-	mMixer->resample_channels(srcChannelsOffset, outputBuffer, outputStride, voice->mChannels, safeOutputCount, voice->mPreciseSrcPosition, stepSize, availableInput,
-	                          lookaheadSamples);
-
 	// Update position tracking with precise accumulation
-	double totalAdvance = samplesProduced * stepSize;
+	double totalAdvance = safeOutputCount * stepSize;
 	voice->mPreciseSrcPosition += totalAdvance;
 
 	// Update buffer position for consumed integer samples while preserving fractional part
@@ -801,7 +812,19 @@ unsigned int Soloud::resampleVoicePrecise_internal(AudioSourceInstance *voice,
 		voice->mPreciseSrcPosition -= integralConsumed; // Keep fractional part for precise positioning
 	}
 
-	return samplesProduced;
+	// the stream position follows what was consumed, and continues from the loop point once the read position reaches a queued loop wrap
+	double readPos = voice->mResampleBufferPos + voice->mPreciseSrcPosition;
+	if (voice->mLoopWrapPending && readPos >= voice->mLoopWrapIndex)
+	{
+		voice->mStreamPosition = (voice->mLoopWrapFrame + (readPos - voice->mLoopWrapIndex)) / voice->mBaseSamplerate;
+		voice->mLoopWrapPending = false;
+	}
+	else
+	{
+		voice->mStreamPosition += totalAdvance / voice->mBaseSamplerate;
+	}
+
+	return safeOutputCount;
 }
 
 namespace MixingConstants
@@ -1162,7 +1185,6 @@ void Soloud::mix_internal(unsigned int aSamples, unsigned int aStride)
 		}
 
 		currentVoice->mStreamTime += buffertime;
-		currentVoice->mStreamPosition += (double)buffertime * (double)currentVoice->mOverallRelativePlaySpeed;
 
 		// TODO: this is actually unstable, because mStreamTime depends on the relative
 		// play speed.

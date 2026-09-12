@@ -109,7 +109,7 @@ public:
 	float mOverallRelativePlaySpeed;
 	// How long this stream has played, in seconds.
 	time mStreamTime;
-	// Position of this stream, in seconds.
+	// Position of this stream, in seconds of source audio. Follows what the resampler has consumed, so it tracks what is actually playing.
 	time mStreamPosition;
 	// Fader for the audio panning
 	Fader mPanFader;
@@ -148,6 +148,13 @@ public:
 	unsigned int mResampleBufferPos;  // Current read position in buffer
 	double mPreciseSrcPosition;       // Exact fractional position in source stream
 
+	// A loop wrap the read position hasn't reached yet: the source was sent back to the loop point while pre-loop audio was
+	// still queued. The samples landing at mLoopWrapIndex start at source frame mLoopWrapFrame, and mStreamPosition continues
+	// from there once the read position gets that far. One slot: loops shorter than the queue may fold several wraps into it.
+	bool mLoopWrapPending;
+	unsigned int mLoopWrapIndex;
+	double mLoopWrapFrame;
+
 	// Access a given channel of the resample buffer (mostly internal use).
 	[[nodiscard]] float *getResampleBuffer(unsigned int ch);
 
@@ -164,9 +171,10 @@ public:
 
 private:
 	friend class Soloud;
-	// Internal helper to zero out the resample buffer for all channels
-	// If "amount" parameter is specified, only that amount of data will be cleared per channel instead of the entire buffer
-	void clearResampleBuffer(unsigned long amount = 0);
+	// Internal helper to empty the resample buffer: drops any queued source data and resets the read/fill positions
+	void clearResampleBuffer();
+	// Source frame the next getAudio() call will produce, given aRead frames pulled by a read still in progress
+	[[nodiscard]] double getReadCursor(unsigned int aRead) const;
 };
 
 // Base class for audio sources

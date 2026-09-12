@@ -141,9 +141,20 @@ result Soloud::seek(handle aVoiceHandle, time aSeconds)
 	result res = SO_NO_ERROR;
 	result singleres = SO_NO_ERROR;
 	FOR_ALL_VOICES_PRE
+	// the instance's seek measures from mStreamPosition, so point it at the source's next frame for the call; on success,
+	// whatever is still queued for resampling is from before the seek, so drop it (mStreamPosition is then the new position)
+	time playPosition = mVoice[ch]->mStreamPosition;
+	mVoice[ch]->mStreamPosition = mVoice[ch]->getReadCursor(0) / mVoice[ch]->mBaseSamplerate;
 	singleres = mVoice[ch]->seek(aSeconds, mScratch.mData, mScratchSize);
 	if (singleres != SO_NO_ERROR)
+	{
 		res = singleres;
+		mVoice[ch]->mStreamPosition = playPosition;
+	}
+	else
+	{
+		mVoice[ch]->clearResampleBuffer();
+	}
 	FOR_ALL_VOICES_POST
 	return res;
 }
