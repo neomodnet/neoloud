@@ -52,13 +52,14 @@ namespace // static
 
 // All dr_* libraries use the same seek origin values: 0=SET, 1=CUR, 2=END
 // These are duplicated to avoid UBSan warnings, even though the underlying types are the same
-size_t drwav_read_func(void *pUserData, void *pBufferOut, size_t bytesToRead)
+size_t drlib_read_func(void *pUserData, void *pBufferOut, size_t bytesToRead)
 {
 	File *fp = (File *)pUserData;
 	return fp->read((unsigned char *)pBufferOut, (unsigned int)bytesToRead);
 }
 
-drwav_bool32 drwav_seek_func(void *pUserData, int offset, drwav_seek_origin origin)
+template <typename Return, typename Origin>
+Return drlib_seek_func(void *pUserData, int offset, Origin origin)
 {
 	File *fp = (File *)pUserData;
 
@@ -71,62 +72,11 @@ drwav_bool32 drwav_seek_func(void *pUserData, int offset, drwav_seek_origin orig
 	return 1;
 }
 
-drwav_bool32 drwav_tell_func(void *pUserData, drwav_int64 *pCursor)
+template <typename Return, typename Cursor>
+Return drlib_tell_func(void *pUserData, Cursor *pCursor)
 {
 	File *fp = (File *)pUserData;
 	*pCursor = (drwav_int64)fp->pos();
-	return 1;
-}
-
-size_t drmp3_read_func(void *pUserData, void *pBufferOut, size_t bytesToRead)
-{
-	File *fp = (File *)pUserData;
-	return fp->read((unsigned char *)pBufferOut, (unsigned int)bytesToRead);
-}
-
-drmp3_bool32 drmp3_seek_func(void *pUserData, int offset, drmp3_seek_origin origin)
-{
-	File *fp = (File *)pUserData;
-
-	if (origin == 1) // CUR
-		offset += fp->pos();
-	else if (origin == 2) // END
-		offset += fp->length();
-
-	fp->seek(offset);
-	return 1;
-}
-
-drmp3_bool32 drmp3_tell_func(void *pUserData, drmp3_int64 *pCursor)
-{
-	File *fp = (File *)pUserData;
-	*pCursor = (drmp3_int64)fp->pos();
-	return 1;
-}
-
-size_t drflac_read_func(void *pUserData, void *pBufferOut, size_t bytesToRead)
-{
-	File *fp = (File *)pUserData;
-	return fp->read((unsigned char *)pBufferOut, (unsigned int)bytesToRead);
-}
-
-drflac_bool32 drflac_seek_func(void *pUserData, int offset, drflac_seek_origin origin)
-{
-	File *fp = (File *)pUserData;
-
-	if (origin == 1) // CUR
-		offset += fp->pos();
-	else if (origin == 2) // END
-		offset += fp->length();
-
-	fp->seek(offset);
-	return 1;
-}
-
-drflac_bool32 drflac_tell_func(void *pUserData, drflac_int64 *pCursor)
-{
-	File *fp = (File *)pUserData;
-	*pCursor = (drflac_int64)fp->pos();
 	return 1;
 }
 
@@ -171,7 +121,7 @@ WavStreamInstance::WavStreamInstance(WavStream *aParent)
 	{
 	case WAVSTREAM_WAV: {
 		auto drwavTemp = std::make_unique<drwav>();
-		if (drwav_init(drwavTemp.get(), drwav_read_func, drwav_seek_func, drwav_tell_func, (void *)mFile, nullptr))
+		if (drwav_init(drwavTemp.get(), drlib_read_func, drlib_seek_func, drlib_tell_func, (void *)mFile, nullptr))
 			mWav = drwavTemp.release();
 	}
 	break;
@@ -183,7 +133,7 @@ WavStreamInstance::WavStreamInstance(WavStream *aParent)
 	}
 	break;
 	case WAVSTREAM_FLAC: {
-		mFlac = drflac_open(drflac_read_func, drflac_seek_func, drflac_tell_func, (void *)mFile, nullptr);
+		mFlac = drflac_open(drlib_read_func, drlib_seek_func, drlib_tell_func, (void *)mFile, nullptr);
 	}
 	break;
 	case WAVSTREAM_MPG123: {
@@ -192,7 +142,7 @@ WavStreamInstance::WavStreamInstance(WavStream *aParent)
 	break;
 	case WAVSTREAM_DRMP3: {
 		auto drmp3Temp = std::make_unique<drmp3>();
-		if (drmp3_init(drmp3Temp.get(), drmp3_read_func, drmp3_seek_func, drmp3_tell_func, nullptr, (void *)mFile, nullptr))
+		if (drmp3_init(drmp3Temp.get(), drlib_read_func, drlib_seek_func, drlib_tell_func, nullptr, (void *)mFile, nullptr))
 		{
 			mDrmp3 = drmp3Temp.release();
 			if (mParent->mMp3SeekPointCount > 0 && mParent->mMp3SeekPoints != nullptr)
@@ -555,7 +505,7 @@ result WavStream::loadwav(File *fp)
 	fp->seek(0);
 	drwav decoder;
 
-	if (!drwav_init(&decoder, drwav_read_func, drwav_seek_func, drwav_tell_func, (void *)fp, nullptr))
+	if (!drwav_init(&decoder, drlib_read_func, drlib_seek_func, drlib_tell_func, (void *)fp, nullptr))
 		return FILE_LOAD_FAILED;
 
 	mChannels = decoder.channels;
@@ -629,7 +579,7 @@ result WavStream::loadogg(File *fp)
 result WavStream::loadflac(File *fp)
 {
 	fp->seek(0);
-	drflac *decoder = drflac_open(drflac_read_func, drflac_seek_func, drflac_tell_func, (void *)fp, nullptr);
+	drflac *decoder = drflac_open(drlib_read_func, drlib_seek_func, drlib_tell_func, (void *)fp, nullptr);
 
 	if (decoder == nullptr)
 		return FILE_LOAD_FAILED;
@@ -682,7 +632,7 @@ result WavStream::loaddrmp3(File *fp)
 {
 	fp->seek(0);
 	drmp3 decoder;
-	if (!drmp3_init(&decoder, drmp3_read_func, drmp3_seek_func, drmp3_tell_func, nullptr, (void *)fp, nullptr))
+	if (!drmp3_init(&decoder, drlib_read_func, drlib_seek_func, drlib_tell_func, nullptr, (void *)fp, nullptr))
 		return FILE_LOAD_FAILED;
 
 	mChannels = decoder.channels;
