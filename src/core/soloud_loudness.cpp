@@ -129,13 +129,13 @@ float channelWeight(unsigned int aChannel, unsigned int aChannelCount)
 void kWeightChunkScalar(const BiquadCoeffs &aPreCoeffs, const BiquadCoeffs &aRlbCoeffs, BiquadState *aPreState, BiquadState *aRlbState, const float *aBuffer,
                         unsigned int aSamplesRead, unsigned int aBufStride, unsigned int aChannels, float *aOut)
 {
-	float temp = 0.f;
 	for (unsigned int ch = 0; ch < aChannels; ch++)
 	{
 		const float *src = aBuffer + (size_t)(ch * aBufStride);
 		float *dst = aOut + (size_t)(ch * aBufStride);
 		for (unsigned int i = 0; i < aSamplesRead; i++)
 		{
+			float temp; // NOLINT
 			float sample = src[i];
 #define BIQUAD_PROCESS(sample_, c, s) \
 	temp = (c).b0 * (sample_) + (c).b1 * (s).x1 + (c).b2 * (s).x2 - (c).a1 * (s).y1 - (c).a2 * (s).y2; \

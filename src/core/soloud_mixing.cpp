@@ -166,6 +166,74 @@ void Mixer::interlace_samples(void *outputBuffer, const float *const rawBuffer, 
 	}
 }
 
+void Mixer::convert_samples(void *const *aOutputBuffers, const float *const aRawBuffer, unsigned int aSamples, unsigned int aStride, unsigned int aChannels,
+                            SAMPLE_FORMAT aFormat)
+{
+	// one contiguous destination per channel
+	for (unsigned int j = 0; j < aChannels; j++)
+	{
+		const float *src = aRawBuffer + j * aStride;
+		switch (aFormat)
+		{
+		case SAMPLE_FLOAT32:
+			memcpy(aOutputBuffers[j], src, aSamples * sizeof(float));
+			break;
+
+		case SAMPLE_UNSIGNED8: {
+			unsigned char *buffer = static_cast<unsigned char *>(aOutputBuffers[j]);
+			for (unsigned int i = 0; i < aSamples; i++)
+			{
+				int sample = (int)(src[i] * 127.0f + 128.0f);
+				if (sample < 0)
+					sample = 0;
+				if (sample > 255)
+					sample = 255;
+				buffer[i] = (unsigned char)sample;
+			}
+		}
+		break;
+
+		case SAMPLE_SIGNED16: {
+			short *buffer = static_cast<short *>(aOutputBuffers[j]);
+			for (unsigned int i = 0; i < aSamples; i++)
+				buffer[i] = (short)(src[i] * 0x7fff);
+		}
+		break;
+
+		case SAMPLE_SIGNED24: {
+			unsigned char *buffer = static_cast<unsigned char *>(aOutputBuffers[j]);
+			for (unsigned int i = 0; i < aSamples; i++)
+			{
+				int sample = (int)(src[i] * (float)(INT_MAX >> 8));
+				if (sample < (INT_MIN >> 8))
+					sample = (INT_MIN >> 8);
+				if (sample > (INT_MAX >> 8))
+					sample = (INT_MAX >> 8);
+
+				buffer[i * 3] = (unsigned char)(sample & 0xff);
+				buffer[i * 3 + 1] = (unsigned char)((sample >> 8) & 0xff);
+				buffer[i * 3 + 2] = (unsigned char)((sample >> 16) & 0xff);
+			}
+		}
+		break;
+
+		case SAMPLE_SIGNED32: {
+			int *buffer = static_cast<int *>(aOutputBuffers[j]);
+			for (unsigned int i = 0; i < aSamples; i++)
+			{
+				double sample = (double)src[i] * (double)INT_MAX;
+				if (sample < (double)INT_MIN)
+					sample = (double)INT_MIN;
+				if (sample > (double)INT_MAX)
+					sample = (double)INT_MAX;
+				buffer[i] = (int)sample;
+			}
+		}
+		break;
+		}
+	}
+}
+
 // Scalar implementation
 void Mixer::clip_samples(const float *const aBuffer, float *aDestBuffer, unsigned int aSamples, unsigned int aChannels, float aVolume0, float aVolume1,
                          float aScaler, bool aRoundoff)

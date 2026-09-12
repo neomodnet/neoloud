@@ -133,6 +133,22 @@ public:
 	                               SAMPLE_FORMAT aFormat = SAMPLE_FLOAT32);
 
 	/**
+	 * Convert channel-separated audio data to one buffer per channel with sample format conversion
+	 *
+	 * @param aOutputBuffers Destination buffers, one per channel
+	 * @param aRawBuffer     Source buffer with channel-separated float data
+	 * @param aSamples       Number of samples per channel to process
+	 * @param aStride        Size of each source channel buffer (including padding for alignment)
+	 * @param aChannels      Number of audio channels
+	 * @param aFormat        Target sample format for conversion
+	 *
+	 * The planar counterpart of interlace_samples with the same conversions, for backends
+	 * that take one buffer per channel (ASIO).
+	 */
+	static void convert_samples(void *const *aOutputBuffers, const float *const aRawBuffer, unsigned int aSamples, unsigned int aStride, unsigned int aChannels,
+	                            SAMPLE_FORMAT aFormat = SAMPLE_FLOAT32);
+
+	/**
 	 * Pan and expand audio from source channel count to output channel count
 	 *
 	 * @param aVoice         Voice instance containing channel volume settings

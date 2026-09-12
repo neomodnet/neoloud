@@ -116,8 +116,8 @@ struct AsioData
 	bool outputReadySupported{false};
 	std::atomic<bool> running{false}; // set around start()/stop(), checked by the buffer switch callback
 	bool comInitialized{false};
-	DWORD threadId{0};                      // the thread that loaded the driver, the only one that may call into it
-	std::vector<unsigned char> interleaved; // mix() output, deinterleaved into the driver's per-channel buffers
+	DWORD threadId{0};                                // the thread that loaded the driver, the only one that may call into it
+	std::array<std::vector<void *>, 2> outputBuffers; // the driver's per-channel buffers, one list per half of its double buffer, as mixPlanar() takes them
 
 	std::atomic<bool> deviceLost{false};
 	std::atomic<unsigned int> overloads{0};
@@ -312,55 +312,24 @@ long clamp_buffer_size(long aMinSize, long aMaxSize, long aPreferredSize, long a
 	return size;
 }
 
-template <size_t BYTES>
-void deinterleave_samples(const unsigned char *aSrc, size_t aStride, long aFrames, unsigned char *aDest)
-{
-	for (long i = 0; i < aFrames; i++)
-		memcpy(aDest + i * BYTES, aSrc + i * aStride, BYTES);
-}
-
-void deinterleave_channel(const AsioData *data, long aChannel, void *aDest)
-{
-	const unsigned char *src = data->interleaved.data() + static_cast<size_t>(aChannel) * data->bytesPerSample;
-	const size_t stride = static_cast<size_t>(data->numChannels) * data->bytesPerSample;
-
-	if (data->sampleShift != 0)
-	{
-		int *dst = static_cast<int *>(aDest);
-		for (long i = 0; i < data->bufferSize; i++)
-		{
-			int sample;
-			memcpy(&sample, src + i * stride, sizeof(sample));
-			dst[i] = sample >> data->sampleShift;
-		}
-		return;
-	}
-
-	// fixed copy sizes, so the per-sample copies compile down to plain loads and stores
-	unsigned char *dst = static_cast<unsigned char *>(aDest);
-	switch (data->bytesPerSample)
-	{
-	case 2:
-		deinterleave_samples<2>(src, stride, data->bufferSize, dst);
-		break;
-	case 3:
-		deinterleave_samples<3>(src, stride, data->bufferSize, dst);
-		break;
-	default:
-		deinterleave_samples<4>(src, stride, data->bufferSize, dst);
-		break;
-	}
-}
-
 void asio_buffer_switch(long aBufferIndex, ASIOBool /*aDirectProcess*/)
 {
 	AsioData *data = gInstance.load(std::memory_order_acquire);
 	if (!data || !data->running.load(std::memory_order_acquire))
 		return;
 
-	data->soloud->mix(data->interleaved.data(), static_cast<unsigned int>(data->bufferSize), data->format);
-	for (long channel = 0; channel < data->numChannels; channel++)
-		deinterleave_channel(data, channel, data->bufferInfos[channel].buffers[aBufferIndex]);
+	const std::vector<void *> &buffers = data->outputBuffers[aBufferIndex];
+	data->soloud->mixPlanar(buffers.data(), static_cast<unsigned int>(data->bufferSize), data->format);
+	if (data->sampleShift != 0)
+	{
+		// 32-bit containers with fewer significant bits, the mixer fills the full range
+		for (void *buffer : buffers)
+		{
+			int *samples = static_cast<int *>(buffer);
+			for (long i = 0; i < data->bufferSize; i++)
+				samples[i] >>= data->sampleShift;
+		}
+	}
 
 	if (data->outputReadySupported)
 		data->driver->outputReady();
@@ -453,6 +422,8 @@ void close_driver(AsioData *data)
 	{
 		data->driver->disposeBuffers();
 		data->bufferInfos.clear();
+		for (std::vector<void *> &half : data->outputBuffers)
+			half.clear();
 	}
 	data->driver->Release();
 	data->driver = nullptr;
@@ -596,7 +567,12 @@ result open_driver(AsioData *data, const AsioDriverEntry &aEntry)
 
 	// drivers that support it wait for outputReady() after each buffer switch instead of adding a period of latency
 	data->outputReadySupported = (driver->outputReady() == ASE_OK);
-	data->interleaved.assign(static_cast<size_t>(data->bufferSize) * data->numChannels * data->bytesPerSample, 0);
+	for (size_t half = 0; half < data->outputBuffers.size(); half++)
+	{
+		data->outputBuffers[half].resize(static_cast<size_t>(data->numChannels));
+		for (long channel = 0; channel < data->numChannels; channel++)
+			data->outputBuffers[half][channel] = data->bufferInfos[channel].buffers[half];
+	}
 
 	data->currentDevice = aEntry.info;
 	data->deviceLost.store(false);

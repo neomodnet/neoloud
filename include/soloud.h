@@ -659,6 +659,8 @@ public:
 
 	// Returns mixed float samples in buffer. Called by the back-end, or user with null driver.
 	void mix(void *aBuffer, unsigned int aSamples, mixing::SAMPLE_FORMAT aFormat = mixing::SAMPLE_FLOAT32);
+	// Same as mix(), but with the samples of each channel in a buffer of its own (aBuffers[0..channels-1]) instead of interleaved.
+	void mixPlanar(void *const *aBuffers, unsigned int aSamples, mixing::SAMPLE_FORMAT aFormat = mixing::SAMPLE_FLOAT32);
 
 	// Lock audio thread mutex.
 	void lockAudioMutex_internal();

@@ -1285,6 +1285,20 @@ void Soloud::mix(void *aBuffer, unsigned int aSamples, SAMPLE_FORMAT aFormat)
 #endif
 }
 
+void Soloud::mixPlanar(void *const *aBuffers, unsigned int aSamples, SAMPLE_FORMAT aFormat)
+{
+#ifdef __EMSCRIPTEN__
+	mInAudioCallback = true;
+#endif
+	unsigned int stride = (aSamples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
+	mix_internal(aSamples, stride);
+
+	Mixer::convert_samples(aBuffers, mScratch.mData, aSamples, stride, mChannels, aFormat);
+#ifdef __EMSCRIPTEN__
+	mInAudioCallback = false;
+#endif
+}
+
 void Soloud::lockAudioMutex_internal()
 {
 	if (mAudioThreadMutex)
