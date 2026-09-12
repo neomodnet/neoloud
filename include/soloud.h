@@ -577,11 +577,11 @@ public:
 	unsigned int mMaxActiveVoices;
 	// Highest voice in use so far
 	unsigned int mHighestVoice;
-	// Scratch buffer, used for resampling.
+	// Scratch buffer, used for resampling, and as the discard buffer for seek(). Only touch it while holding the audio mutex.
 	AlignedFloatBuffer mScratch;
 	// Current size of the scratch, in samples.
 	unsigned int mScratchSize;
-	// Output scratch buffer, used in mix_().
+	// Output scratch buffer, used in mix_(). The audio thread clips and interleaves out of it after releasing the audio mutex, so nothing else may use it.
 	AlignedFloatBuffer mOutputScratch;
 	// Audio voices.
 	std::array<AudioSourceInstance *, VOICE_COUNT> mVoice;

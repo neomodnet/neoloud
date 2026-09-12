@@ -91,7 +91,7 @@ public:
 	 * Apply volume scaling and clipping to audio buffer
 	 *
 	 * @param aBuffer       Input buffer with source samples
-	 * @param aDestBuffer   Output buffer for processed samples
+	 * @param aDestBuffer   Output buffer for processed samples (may be aBuffer itself, to clip in place)
 	 * @param aSamples      Number of samples to process
 	 * @param aChannels     Number of channels
 	 * @param aVolume0      Starting volume level

@@ -1247,9 +1247,10 @@ void Soloud::mix_internal(unsigned int aSamples, unsigned int aStride)
 
 	unlockAudioMutex_internal();
 
+	// The mutex is released from here on, so stay out of mScratch: seek() discards into it under the lock. Clip in place instead.
 	// Note: clipping channels*aStride, not channels*aSamples, so we're possibly clipping some unused data.
 	// The buffers should be large enough for it, we just may do a few bytes of unneccessary work.
-	mMixer->clip_samples(mOutputScratch.mData, mScratch.mData, aStride, mChannels, globalVolume[0], globalVolume[1], mPostClipScaler, mFlags & CLIP_ROUNDOFF);
+	mMixer->clip_samples(mOutputScratch.mData, mOutputScratch.mData, aStride, mChannels, globalVolume[0], globalVolume[1], mPostClipScaler, mFlags & CLIP_ROUNDOFF);
 
 	if (mFlags & ENABLE_VISUALIZATION)
 	{
@@ -1265,7 +1266,7 @@ void Soloud::mix_internal(unsigned int aSamples, unsigned int aStride)
 				mVisualizationWaveData[i] = 0;
 				for (j = 0; j < (signed)mChannels; j++)
 				{
-					float sample = mScratch.mData[i + j * aStride];
+					float sample = mOutputScratch.mData[i + j * aStride];
 					float absvol = (float)std::fabs(sample);
 					if (mVisualizationChannelVolume[j] < absvol)
 						mVisualizationChannelVolume[j] = absvol;
@@ -1282,7 +1283,7 @@ void Soloud::mix_internal(unsigned int aSamples, unsigned int aStride)
 				mVisualizationWaveData[i] = 0;
 				for (j = 0; j < (signed)mChannels; j++)
 				{
-					float sample = mScratch.mData[(i % aSamples) + j * aStride];
+					float sample = mOutputScratch.mData[(i % aSamples) + j * aStride];
 					float absvol = (float)std::fabs(sample);
 					if (mVisualizationChannelVolume[j] < absvol)
 						mVisualizationChannelVolume[j] = absvol;
@@ -1301,7 +1302,7 @@ void Soloud::mix(void *aBuffer, unsigned int aSamples, SAMPLE_FORMAT aFormat)
 	unsigned int stride = (aSamples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
 	mix_internal(aSamples, stride);
 
-	mMixer->interlace_samples(aBuffer, mScratch.mData, aSamples, stride, mChannels, aFormat);
+	mMixer->interlace_samples(aBuffer, mOutputScratch.mData, aSamples, stride, mChannels, aFormat);
 #ifdef __EMSCRIPTEN__
 	mInAudioCallback = false;
 #endif
@@ -1315,7 +1316,7 @@ void Soloud::mixPlanar(void *const *aBuffers, unsigned int aSamples, SAMPLE_FORM
 	unsigned int stride = (aSamples + CPU_ALIGNMENT_MASK()) & ~CPU_ALIGNMENT_MASK();
 	mix_internal(aSamples, stride);
 
-	Mixer::convert_samples(aBuffers, mScratch.mData, aSamples, stride, mChannels, aFormat);
+	Mixer::convert_samples(aBuffers, mOutputScratch.mData, aSamples, stride, mChannels, aFormat);
 #ifdef __EMSCRIPTEN__
 	mInAudioCallback = false;
 #endif
