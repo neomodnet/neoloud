@@ -15,18 +15,43 @@ namespace
 {
 constexpr unsigned int RATE = 48000;
 constexpr unsigned int BUF = 512;
-// an impulse train is what survives a phase vocoder with its timing intact: a single-sample click comes out as a short burst whose peak sits
-// within a few samples of where the click belongs, so it decodes the source position of the audio that is actually playing
+// an impulse train is what survives a stretch with its timing intact: a single-sample click comes out of the phase vocoder as a short burst
+// whose peak sits within a few samples of where the click belongs, and out of the time-domain engine as the click itself, so it decodes the
+// source position of the audio that is actually playing
 constexpr unsigned int IMPULSE_PERIOD = RATE / 2;
 constexpr unsigned int IMPULSE_OFFSET = RATE / 8;
 constexpr unsigned int IMPULSE_FRAMES = RATE * 12;
 constexpr float IMPULSE_THRESHOLD = 0.3f;
-// in source frames: the library places a transient within a few output samples once it has settled, and within tens of them in the first
-// quarter second after it is primed (at play, and at every seek)
+// in source frames: the phase vocoder places a transient within a few output samples once it has settled, and within tens of them in the
+// first quarter second after it is primed (at play, and at every seek); the time-domain engine anchors an onset to the nearest output
+// frame, so within half a frame's worth of source
 constexpr double ALIGN_TOLERANCE = 24.0;
 constexpr double SETTLING_TOLERANCE = 64.0;
+constexpr double TIME_DOMAIN_TOLERANCE = 1.5;
 constexpr size_t SETTLING_FRAMES = RATE / 4;
 constexpr double TEMPOS[] = {0.5, 0.75, 1.25, 1.5, 2.0};
+
+// a tempo above 1.0 with no pitch shift is stretched in the time domain
+bool timeDomainTempo(double aTempo)
+{
+	return aTempo > 1.0;
+}
+
+double alignTolerance(double aTempo)
+{
+	return timeDomainTempo(aTempo) ? TIME_DOMAIN_TOLERANCE : ALIGN_TOLERANCE;
+}
+
+double settlingTolerance(double aTempo)
+{
+	return timeDomainTempo(aTempo) ? TIME_DOMAIN_TOLERANCE : SETTLING_TOLERANCE;
+}
+
+bool timeDomain(SoLoud::Soloud &aSoloud, SoLoud::handle aHandle)
+{
+	SoLoud::AudioSourceInstance *voice = aSoloud.mVoice[aSoloud.getVoiceFromHandle_internal(aHandle)];
+	return voice->mStretcher && voice->mStretcher->isTimeDomain();
+}
 
 double impulseFrame(int aIndex)
 {
@@ -347,14 +372,16 @@ void checkTransparency(SoLoud::Soloud &aSoloud)
 		CHECK(std::abs(raw.positions[b] - engaged.positions[b]) < 1.0);
 	}
 
-	// stretched, then back to unity on a source that can't seek back: the stage stays, and once the change has reached the output, what
-	// comes out is the source again, at its level and pitch (the phase vocoder keeps the phases coherent, not where the source had them)
+	// stretched, then back to unity on a source that can't seek back: the stage stays with the engine it primed with, and once the change
+	// has reached the output, what comes out is the source again, at its level and pitch
 	GenericSource sine(true);
 	h = start(aSoloud, sine, 1.5, 1.0);
 	capture(aSoloud, h, 100);
+	CHECK(timeDomain(aSoloud, h));
 	aSoloud.setTempo(h, 1.0f);
 	CHECK(aSoloud.getTempo(h) == 1.0f);
 	capture(aSoloud, h, 50);
+	CHECK(timeDomain(aSoloud, h));
 	Capture unity = capture(aSoloud, h, 100);
 	aSoloud.stopAll();
 	int crossings = 0;
@@ -427,12 +454,13 @@ void checkAlignment(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource, doubl
 	checkSeek(1.3, true);
 	// a small forward seek, into the audio the stretcher already holds
 	checkSeek(aSoloud.getStreamPosition(h) + 0.002, false);
+	CHECK(timeDomain(aSoloud, h) == timeDomainTempo(aTempo));
 	aSoloud.stopAll();
 	PRINTINFO("Alignment: %s at tempo %.2f: %d impulses, worst %.1f source frames off (%.1f while settling), %d spurious\n", aName, aTempo, stats.impulses,
 	          stats.maxError, stats.maxSettlingError, stats.spurious);
 	CHECK(stats.impulses >= 8);
-	CHECK(stats.maxError <= ALIGN_TOLERANCE);
-	CHECK(stats.maxSettlingError <= SETTLING_TOLERANCE);
+	CHECK(stats.maxError <= alignTolerance(aTempo));
+	CHECK(stats.maxSettlingError <= settlingTolerance(aTempo));
 	CHECK(stats.spurious == 0);
 }
 
@@ -452,12 +480,13 @@ void checkEngageLive(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource)
 	CHECK(std::abs(cap.positions[1] - (cap.positions[0] + BUF * 1.5)) < 1.0);
 	ImpulseStats stats;
 	checkImpulses(cap, 1.5, stats);
+	CHECK(timeDomain(aSoloud, h));
 	aSoloud.stopAll();
 	PRINTINFO("Engage on a live voice: %d impulses, worst %.1f source frames off (%.1f while settling), %d spurious\n", stats.impulses, stats.maxError,
 	          stats.maxSettlingError, stats.spurious);
 	CHECK(stats.impulses >= 5);
-	CHECK(stats.maxError <= ALIGN_TOLERANCE);
-	CHECK(stats.maxSettlingError <= SETTLING_TOLERANCE);
+	CHECK(stats.maxError <= alignTolerance(1.5));
+	CHECK(stats.maxSettlingError <= settlingTolerance(1.5));
 	CHECK(stats.spurious == 0);
 }
 
@@ -511,8 +540,8 @@ void checkLoop(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource, double aTe
 	          stats.impulses, stats.maxError, stats.maxSettlingError, stats.spurious);
 	CHECK(stats.wraps == 2);
 	CHECK(stats.impulses >= 12);
-	CHECK(stats.maxError <= ALIGN_TOLERANCE);
-	CHECK(stats.maxSettlingError <= SETTLING_TOLERANCE);
+	CHECK(stats.maxError <= alignTolerance(aTempo));
+	CHECK(stats.maxSettlingError <= settlingTolerance(aTempo));
 	CHECK(stats.spurious == 0);
 }
 
@@ -536,21 +565,24 @@ void checkInaudibleTick(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource)
 	aSoloud.stopAll();
 	PRINTINFO("Inaudible tick: %d impulses after, worst %.1f source frames off, %d spurious\n", after.impulses, after.maxError, after.spurious);
 	CHECK(after.impulses >= 5);
-	CHECK(after.maxError <= ALIGN_TOLERANCE && after.maxSettlingError <= SETTLING_TOLERANCE);
+	CHECK(after.maxError <= alignTolerance(1.5) && after.maxSettlingError <= settlingTolerance(1.5));
 	CHECK(after.spurious == 0);
 }
 
-// A tempo change on a playing voice keeps the reported position exact: the audio the stretcher had analysed keeps its old spacing, and the
-// position follows that
-void checkLiveChange(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource, const char *aName)
+// A tempo change on a playing voice keeps the reported position exact: the audio the engine had taken in keeps its old spacing, and the
+// position follows that. A change across 1.0 switches engines, through a seek back to the play position on a source that can seek back;
+// one that can't keeps the engine it started with
+void checkLiveChange(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource, bool aCanSeekBack, const char *aName)
 {
 	SoLoud::handle h = start(aSoloud, aSource, 1.25, 1.0);
 	capture(aSoloud, h, 100);
+	CHECK(timeDomain(aSoloud, h));
 	ImpulseStats stats;
 	for (double tempo : {1.5, 0.75, 2.0})
 	{
 		aSoloud.setTempo(h, (float)tempo);
 		Capture cap = capture(aSoloud, h, 200);
+		CHECK(timeDomain(aSoloud, h) == (aCanSeekBack ? timeDomainTempo(tempo) : true));
 		// the buffers until the change has reached the output don't span the new tempo's worth and are left out
 		checkImpulses(cap, tempo, stats);
 		for (size_t b = 0; b + 1 < cap.positions.size(); b++)
@@ -576,6 +608,7 @@ void checkFade(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource)
 	aSoloud.fadeTempo(h, 0.75f, 1.0);
 	Capture fading = capture(aSoloud, h, 250);
 	CHECK(aSoloud.getTempo(h) == 0.75f);
+	CHECK(!timeDomain(aSoloud, h));
 	ImpulseStats stats;
 	checkImpulses(fading, 0.75, stats);
 	for (size_t b = 0; b + 1 < fading.positions.size(); b++)
@@ -629,7 +662,7 @@ void checkMultichannel(SoLoud::Soloud &aSoloud, const std::vector<float> &aImpul
 	PRINTINFO("Six channels: %d impulses, worst %.1f source frames off (%.1f while settling), %d spurious\n", stats.impulses, stats.maxError, stats.maxSettlingError,
 	          stats.spurious);
 	CHECK(stats.impulses >= 3);
-	CHECK(stats.maxError <= ALIGN_TOLERANCE && stats.maxSettlingError <= SETTLING_TOLERANCE);
+	CHECK(stats.maxError <= alignTolerance(1.5) && stats.maxSettlingError <= settlingTolerance(1.5));
 	CHECK(stats.spurious == 0);
 }
 
@@ -649,6 +682,80 @@ void checkAutoStop(SoLoud::Soloud &aSoloud)
 	capture(aSoloud, h, 2);
 	CHECK(!aSoloud.isValidVoiceHandle(h));
 	aSoloud.stopAll();
+}
+
+// Which engine a tempo and pitch shift select, and that a change of engine on a playing voice goes through on a source that can seek back
+// and not on one that can't
+void checkEngineRule(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSeekable, SoLoud::AudioSource &aGeneric)
+{
+	struct Case
+	{
+		double tempo;
+		double pitch;
+		bool timeDomain;
+	};
+	const Case cases[] = {
+	    {1.25, 1.0, true },
+        {1.5,  1.0, true },
+        {2.0,  1.0, true },
+        {0.75, 1.0, false},
+        {0.5,  1.0, false},
+	    {1.0,  2.0, false},
+        {1.0,  0.5, false},
+        {1.5,  2.0, false},
+        {1.5,  0.5, false},
+	};
+	for (const Case &c : cases)
+	{
+		SoLoud::handle h = start(aSoloud, aSeekable, c.tempo, c.pitch);
+		capture(aSoloud, h, 1);
+		CHECK(timeDomain(aSoloud, h) == c.timeDomain);
+		aSoloud.stopAll();
+	}
+	// a pitch shift on a time-domain voice hands it to the phase vocoder, and back once it is gone
+	SoLoud::handle h = start(aSoloud, aSeekable, 1.5, 1.0);
+	capture(aSoloud, h, 10);
+	aSoloud.setPitchShift(h, 1.5f);
+	capture(aSoloud, h, 10);
+	CHECK(!timeDomain(aSoloud, h));
+	aSoloud.setPitchShift(h, 1.0f);
+	capture(aSoloud, h, 10);
+	CHECK(timeDomain(aSoloud, h));
+	aSoloud.stopAll();
+	h = start(aSoloud, aGeneric, 1.5, 1.0);
+	capture(aSoloud, h, 10);
+	aSoloud.setPitchShift(h, 1.5f);
+	capture(aSoloud, h, 10);
+	CHECK(timeDomain(aSoloud, h));
+	aSoloud.stopAll();
+}
+
+// The time-domain engine schedules its sequences on its own timeline, so its output doesn't depend on the size of the mixes that pull it
+void checkPullSize(SoLoud::Soloud &aSoloud, SoLoud::AudioSource &aSource)
+{
+	const unsigned int frames = BUF * 200;
+	auto run = [&](unsigned int aMix) {
+		std::vector<float> samples;
+		std::vector<float> out((size_t)aMix * 2);
+		SoLoud::handle h = start(aSoloud, aSource, 1.5, 1.0);
+		for (unsigned int done = 0; done < frames; done += aMix)
+		{
+			aSoloud.mix(out.data(), aMix);
+			for (unsigned int i = 0; i < aMix; i++)
+				samples.push_back(out[2 * i]);
+		}
+		CHECK(timeDomain(aSoloud, h));
+		aSoloud.stopAll();
+		return samples;
+	};
+	std::vector<float> big = run(BUF);
+	std::vector<float> small = run(BUF / 8);
+	size_t first = 0;
+	while (first < big.size() && first < small.size() && big[first] == small[first])
+		first++;
+	if (first < big.size())
+		PRINTINFO("Pull size: outputs differ from sample %zu on (%.6f vs %.6f)\n", first, big[first], first < small.size() ? small[first] : 0.0f);
+	CHECK(big.size() == small.size() && first == big.size());
 }
 
 // The same sequence produces the same output, bit for bit
@@ -706,11 +813,13 @@ void testTimeStretch()
 	checkDeterminism(soloud, stream);
 
 	GenericSource generic(false);
+	checkEngineRule(soloud, wav, generic);
+	checkPullSize(soloud, wav);
 	checkDisengage(soloud, wav, true, "Wav");
 	checkDisengage(soloud, stream, true, "WavStream");
 	checkDisengage(soloud, generic, false, "a source without rewind");
-	checkLiveChange(soloud, wav, "Wav");
-	checkLiveChange(soloud, generic, "a source without rewind");
+	checkLiveChange(soloud, wav, true, "Wav");
+	checkLiveChange(soloud, generic, false, "a source without rewind");
 	checkFade(soloud, wav);
 	// a 3 second source for the loop test, so that the loop comes round twice within a few seconds
 	SoLoud::Wav loopWav;

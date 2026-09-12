@@ -432,6 +432,10 @@ public:
 	// Set the tempo: play at aTempo times the speed with the pitch kept (2.0 plays twice as fast; 1.0 is the default), on top of the relative
 	// play speed, which changes speed and pitch together. The first tempo or pitch shift other than 1.0 engages the voice's time-stretch stage,
 	// which reads a short stretch of source audio ahead to prime itself in the audio thread's next mix, and again after every seek() of that voice.
+	// A tempo above 1.0 with no pitch shift is stretched in the time domain, which keeps the source's waveform and timbre and places its
+	// onsets on exactly the reported position; anything else goes through a phase vocoder. Changing between the two on a playing voice primes
+	// the stage again, like a seek() to the current position, on a source that can seek backwards (a codec source, or one with rewind()); one
+	// that can't keeps the engine it primed with until its next seek().
 	result setTempo(handle aVoiceHandle, float aTempo);
 	// Set the pitch shift: play with the pitch multiplied by aFactor and the speed kept (2.0 = one octave up, 0.5 = one octave down; 1.0 is the
 	// default), on top of the relative play speed. See setTempo.
@@ -584,8 +588,9 @@ public:
 	result setVoicePitchShift_internal(unsigned int aVoice, float aFactor);
 	// Engage a voice's time-stretch stage (at unity, until a tempo or pitch shift is set) if it has none.
 	void engageVoiceTimeStretch_internal(AudioSourceInstance *voice);
-	// Drop a voice's time-stretch stage once it is back at unity tempo and pitch shift, seeking the source back to the play position.
-	void dropVoiceTimeStretch_internal(AudioSourceInstance *voice);
+	// After a tempo or pitch shift change: drop the voice's time-stretch stage once it is back at unity tempo and pitch shift, or have it
+	// prime again when the change calls for its other engine, either by seeking the source back to the play position.
+	void settleVoiceTimeStretch_internal(AudioSourceInstance *voice);
 	// Set voice (not handle) volume.
 	void setVoiceVolume_internal(unsigned int aVoice, float aVolume);
 	// Set voice (not handle) pause state.

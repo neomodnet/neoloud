@@ -67,8 +67,7 @@ result Soloud::setVoiceTempo_internal(unsigned int aVoice, float aTempo)
 			return SO_NO_ERROR;
 		engageVoiceTimeStretch_internal(voice);
 		voice->mStretcher->setTempo(aTempo);
-		if (aTempo == 1.0f && voice->mStretcher->getPitch() == 1.0f)
-			dropVoiceTimeStretch_internal(voice);
+		settleVoiceTimeStretch_internal(voice);
 	}
 	return SO_NO_ERROR;
 }
@@ -89,8 +88,7 @@ result Soloud::setVoicePitchShift_internal(unsigned int aVoice, float aFactor)
 			return SO_NO_ERROR;
 		engageVoiceTimeStretch_internal(voice);
 		voice->mStretcher->setPitch(aFactor);
-		if (aFactor == 1.0f && voice->mStretcher->getTempo() == 1.0)
-			dropVoiceTimeStretch_internal(voice);
+		settleVoiceTimeStretch_internal(voice);
 	}
 	return SO_NO_ERROR;
 }
@@ -102,11 +100,14 @@ void Soloud::engageVoiceTimeStretch_internal(AudioSourceInstance *voice)
 		voice->mStretcher = std::make_unique<TimeStretcher>(voice->mChannels, voice->mBaseSamplerate);
 }
 
-void Soloud::dropVoiceTimeStretch_internal(AudioSourceInstance *voice)
+void Soloud::settleVoiceTimeStretch_internal(AudioSourceInstance *voice)
 {
 	SOLOUD_ASSERT(mInsideAudioThreadMutex);
+	bool unity = voice->mStretcher->getTempo() == 1.0 && voice->mStretcher->getPitch() == 1.0f;
+	if (!unity && !voice->mStretcher->enginePending())
+		return;
 	// the source audio the stage holds in flight can't be handed back, so the source is seeked back to the play position; a source that
-	// can't seek backwards keeps its stage, which is transparent at unity. a stage that hasn't primed yet holds nothing
+	// can't seek backwards keeps its stage as it is, which is transparent at unity. a stage that hasn't primed yet holds nothing
 	if (voice->mStretcher->isPrimed())
 	{
 		time playPosition = voice->mStreamPosition;
@@ -117,8 +118,10 @@ void Soloud::dropVoiceTimeStretch_internal(AudioSourceInstance *voice)
 			return;
 		}
 		voice->clearResampleBuffer();
+		voice->mStretcher->invalidate();
 	}
-	voice->mStretcher.reset();
+	if (unity)
+		voice->mStretcher.reset();
 }
 
 void Soloud::setVoicePause_internal(unsigned int aVoice, int aPause)
