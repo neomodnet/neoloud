@@ -65,6 +65,39 @@ float *lane(const AlignedFloatBuffer &aBuffer, unsigned int aChannel, unsigned i
 {
 	return aBuffer.mData + (size_t)aChannel * aFrames;
 }
+
+// reference frames accumulated into the candidates' correlations per pass over them: a pass loads and stores every correlation once, so the
+// block sets how many multiply-adds that traffic is spread over; past this the vector registers run out
+constexpr unsigned int CORRELATION_BLOCK = 8;
+
+// aScore[j] += the correlation of aReference (aOverlap frames) with aWindow from its frame j on, for aCount candidates j. the loops run across
+// candidates for a block of reference frames at a time, which vectorises and keeps each candidate's sum in a register across the block; the
+// frames go in the same order as one at a time, so the sums come out the same
+void correlate(const float *aWindow, const float *aReference, float *aScore, unsigned int aOverlap, unsigned int aCount)
+{
+	unsigned int i = 0;
+	for (; i + CORRELATION_BLOCK <= aOverlap; i += CORRELATION_BLOCK)
+	{
+		float r[CORRELATION_BLOCK];
+		for (unsigned int k = 0; k < CORRELATION_BLOCK; k++)
+			r[k] = aReference[i + k];
+		const float *w = aWindow + i;
+		for (unsigned int j = 0; j < aCount; j++)
+		{
+			float s = aScore[j];
+			for (unsigned int k = 0; k < CORRELATION_BLOCK; k++)
+				s += r[k] * w[j + k];
+			aScore[j] = s;
+		}
+	}
+	for (; i < aOverlap; i++)
+	{
+		const float r = aReference[i];
+		const float *w = aWindow + i;
+		for (unsigned int j = 0; j < aCount; j++)
+			aScore[j] += r * w[j];
+	}
+}
 } // namespace
 
 // What the stage asks of an engine. Source and output frames are counted since priming, and the stage feeds source in proportion to the
@@ -658,7 +691,7 @@ idx TimeStretcher::WsolaEngine::search(idx aCentre, idx aLength, idx aAnchoredHe
 	}
 	// each candidate's correlation with the previous sequence's continuation over its first overlap frames, normalised by the candidate's
 	// energy there (the reference's is the same for all), plus the same between its last overlap frames and the anchored sequence's head when
-	// one follows. the correlation loops run across candidates for each reference frame, which vectorises.
+	// one follows
 	float *score = mScore.mData;
 	float *score2 = mScore2.mData;
 	float *energy = mEnergy.mData;
@@ -670,25 +703,9 @@ idx TimeStretcher::WsolaEngine::search(idx aCentre, idx aLength, idx aAnchoredHe
 	for (unsigned int ch = 0; ch < mChannels; ch++)
 	{
 		const float *window = lane(mSearch, ch, mSearchFrames);
-		const float *reference = lane(mReference, ch, overlap);
-		const float *reference2 = lane(mReference2, ch, overlap);
-		for (unsigned int i = 0; i < overlap; i++)
-		{
-			const float r = reference[i];
-			const float *w = window + i;
-			for (unsigned int j = 0; j < count; j++)
-				score[j] += r * w[j];
-		}
+		correlate(window, lane(mReference, ch, overlap), score, overlap, count);
 		if (twoSided)
-		{
-			for (unsigned int i = 0; i < overlap; i++)
-			{
-				const float r = reference2[i];
-				const float *w = window + tailOffset + i;
-				for (unsigned int j = 0; j < count; j++)
-					score2[j] += r * w[j];
-			}
-		}
+			correlate(window + tailOffset, lane(mReference2, ch, overlap), score2, overlap, count);
 		double sum = 0.0;
 		double sum2 = 0.0;
 		for (unsigned int i = 0; i < overlap; i++)
