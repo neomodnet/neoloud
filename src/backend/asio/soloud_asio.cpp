@@ -99,7 +99,6 @@ struct AsioData
 	DeviceInfo currentDevice{};
 
 	// cached init parameters for device switching (the rate and size requests are dropped again when the driver changes them on its own, see asio_message)
-	unsigned int initFlags{0};
 	std::atomic<unsigned int> requestedSampleRate{0};
 	std::atomic<unsigned int> requestedBufferSize{0};
 	unsigned int requestedChannels{0};
@@ -362,7 +361,7 @@ long asio_message(long aSelector, long aValue, void * /*aMessage*/, double * /*a
 		return (aValue == kAsioEngineVersion || aValue == kAsioResetRequest || aValue == kAsioResyncRequest || aValue == kAsioLatenciesChanged ||
 		        aValue == kAsioSupportsTimeInfo || aValue == kAsioOverload)
 		           ? 1
-		           : 0;
+				   : 0;
 	case kAsioEngineVersion:
 		return ASIO_HOST_VERSION;
 	case kAsioResetRequest:
@@ -653,6 +652,9 @@ result asio_set_device(Soloud *aSoloud, const char *aDeviceIdentifier)
 	const double oldSampleRate = data->sampleRate;
 	const long oldBufferSize = data->bufferSize;
 	const long oldChannels = data->numChannels;
+	// a paused engine stays paused on the new driver, resume() starts it; a lost driver is still running as far as this is concerned, so its
+	// replacement always starts
+	const bool paused = !data->running.load() && !data->deviceLost.load();
 
 	close_driver(data);
 	result res = open_driver(data, entry);
@@ -665,11 +667,11 @@ result asio_set_device(Soloud *aSoloud, const char *aDeviceIdentifier)
 
 	if (data->sampleRate != oldSampleRate || data->bufferSize != oldBufferSize || data->numChannels != oldChannels)
 	{
-		aSoloud->postinit_internal(static_cast<unsigned int>(data->sampleRate), static_cast<unsigned int>(data->bufferSize), data->initFlags,
+		aSoloud->postinit_internal(static_cast<unsigned int>(data->sampleRate), static_cast<unsigned int>(data->bufferSize),
 		                           static_cast<unsigned int>(data->numChannels));
 	}
 
-	return start_driver(data);
+	return paused ? SO_NO_ERROR : start_driver(data);
 }
 
 result asio_get_device_latency(Soloud *aSoloud, unsigned int *pLatencyFrames)
@@ -739,7 +741,7 @@ result asio_enumerate_devices(Soloud *aSoloud)
 	return SO_NO_ERROR;
 }
 
-result asio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aChannels, const char *aDeviceIdentifier)
+result asio_init(Soloud *aSoloud, unsigned int /*aFlags*/, unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aChannels, const char *aDeviceIdentifier)
 {
 	AsioData *data = new AsioData();
 	data->logLevel = parse_log_level_from_env();
@@ -758,7 +760,6 @@ result asio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSamplerate,
 	data->threadId = GetCurrentThreadId();
 
 	// cache initialization parameters for device switching
-	data->initFlags = aFlags;
 	data->requestedSampleRate = aSamplerate;
 	data->requestedBufferSize = aBufferSize;
 	data->requestedChannels = aChannels;
@@ -786,7 +787,7 @@ result asio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSamplerate,
 		return res;
 	}
 
-	aSoloud->postinit_internal(static_cast<unsigned int>(data->sampleRate), static_cast<unsigned int>(data->bufferSize), aFlags,
+	aSoloud->postinit_internal(static_cast<unsigned int>(data->sampleRate), static_cast<unsigned int>(data->bufferSize),
 	                           static_cast<unsigned int>(data->numChannels));
 
 	res = start_driver(data);

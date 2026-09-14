@@ -201,6 +201,8 @@ result Soloud::init(unsigned int aFlags, unsigned int aBackend, unsigned int aSa
 	mBackendString = nullptr;
 	mGlobalVolume = 1;
 	mPostClipScaler = 0.95f;
+	mFlags = aFlags;
+	mChannels = 0; // so that the backend's postinit_internal lays out the speakers
 
 	int samplerate = 44100;
 	int buffersize = 2048;
@@ -333,9 +335,12 @@ result Soloud::openDeviceControlPanel()
 }
 
 // also called by backends when a device switch changes the stream configuration, so only the stream configuration (and the speaker layout that
-// follows from the channel count) is set here, not the state the application controls
-void Soloud::postinit_internal(unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aFlags, unsigned int aChannels)
+// follows from the channel count) is set here, not the state the application controls. no callback runs at this point (the device is stopped, or
+// not started yet), so the lock only waits out engine calls from other threads, never the audio thread
+void Soloud::postinit_internal(unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aChannels)
 {
+	lockAudioMutex_internal();
+	bool channelsChanged = (aChannels != mChannels);
 	mChannels = aChannels;
 	mSamplerate = aSamplerate;
 	mBufferSize = aBufferSize;
@@ -343,102 +348,109 @@ void Soloud::postinit_internal(unsigned int aSamplerate, unsigned int aBufferSiz
 	if (mScratchSize < SAMPLE_GRANULARITY * 4) // 4096
 		mScratchSize = SAMPLE_GRANULARITY * 4;
 
-	// mix() never mixes more than mScratchSize samples at once, and mixBus_internal mixes one voice at a time (see VoiceScratch)
-	mScratch.init(VoiceScratch::size(mScratchSize, mChannels));
-	mOutputScratch.init(mScratchSize * MAX_CHANNELS);
+	// mix() never mixes more than mScratchSize samples at once, and mixBus_internal mixes one voice at a time (see VoiceScratch).
+	// also, keep old buffers if they're big enough for the new configuration to avoid unnecessary reallocation
+	if (mScratch.mFloats < VoiceScratch::size(mScratchSize, mChannels))
+		mScratch.init(VoiceScratch::size(mScratchSize, mChannels));
+	if (mOutputScratch.mFloats < mScratchSize * MAX_CHANNELS)
+		mOutputScratch.init(mScratchSize * MAX_CHANNELS);
 
-	mFlags = aFlags;
-	switch (mChannels)
+	// the layout is the default one for the channel count, so the positions the application set stay while the count doesn't change
+	if (channelsChanged)
 	{
-	case 1:
-		m3dSpeakerPosition[0 * 3 + 0] = 0;
-		m3dSpeakerPosition[0 * 3 + 1] = 0;
-		m3dSpeakerPosition[0 * 3 + 2] = 1;
-		break;
-	case 2:
-		m3dSpeakerPosition[0 * 3 + 0] = 2;
-		m3dSpeakerPosition[0 * 3 + 1] = 0;
-		m3dSpeakerPosition[0 * 3 + 2] = 1;
-		m3dSpeakerPosition[1 * 3 + 0] = -2;
-		m3dSpeakerPosition[1 * 3 + 1] = 0;
-		m3dSpeakerPosition[1 * 3 + 2] = 1;
-		break;
-	case 4:
-		m3dSpeakerPosition[0 * 3 + 0] = 2;
-		m3dSpeakerPosition[0 * 3 + 1] = 0;
-		m3dSpeakerPosition[0 * 3 + 2] = 1;
-		m3dSpeakerPosition[1 * 3 + 0] = -2;
-		m3dSpeakerPosition[1 * 3 + 1] = 0;
-		m3dSpeakerPosition[1 * 3 + 2] = 1;
-		// I suppose technically the second pair should be straight left & right,
-		// but I prefer moving them a bit back to mirror the front speakers.
-		m3dSpeakerPosition[2 * 3 + 0] = 2;
-		m3dSpeakerPosition[2 * 3 + 1] = 0;
-		m3dSpeakerPosition[2 * 3 + 2] = -1;
-		m3dSpeakerPosition[3 * 3 + 0] = -2;
-		m3dSpeakerPosition[3 * 3 + 1] = 0;
-		m3dSpeakerPosition[3 * 3 + 2] = -1;
-		break;
-	case 6:
-		m3dSpeakerPosition[0 * 3 + 0] = 2;
-		m3dSpeakerPosition[0 * 3 + 1] = 0;
-		m3dSpeakerPosition[0 * 3 + 2] = 1;
-		m3dSpeakerPosition[1 * 3 + 0] = -2;
-		m3dSpeakerPosition[1 * 3 + 1] = 0;
-		m3dSpeakerPosition[1 * 3 + 2] = 1;
+		switch (mChannels)
+		{
+		case 1:
+			m3dSpeakerPosition[0 * 3 + 0] = 0;
+			m3dSpeakerPosition[0 * 3 + 1] = 0;
+			m3dSpeakerPosition[0 * 3 + 2] = 1;
+			break;
+		case 2:
+			m3dSpeakerPosition[0 * 3 + 0] = 2;
+			m3dSpeakerPosition[0 * 3 + 1] = 0;
+			m3dSpeakerPosition[0 * 3 + 2] = 1;
+			m3dSpeakerPosition[1 * 3 + 0] = -2;
+			m3dSpeakerPosition[1 * 3 + 1] = 0;
+			m3dSpeakerPosition[1 * 3 + 2] = 1;
+			break;
+		case 4:
+			m3dSpeakerPosition[0 * 3 + 0] = 2;
+			m3dSpeakerPosition[0 * 3 + 1] = 0;
+			m3dSpeakerPosition[0 * 3 + 2] = 1;
+			m3dSpeakerPosition[1 * 3 + 0] = -2;
+			m3dSpeakerPosition[1 * 3 + 1] = 0;
+			m3dSpeakerPosition[1 * 3 + 2] = 1;
+			// I suppose technically the second pair should be straight left & right,
+			// but I prefer moving them a bit back to mirror the front speakers.
+			m3dSpeakerPosition[2 * 3 + 0] = 2;
+			m3dSpeakerPosition[2 * 3 + 1] = 0;
+			m3dSpeakerPosition[2 * 3 + 2] = -1;
+			m3dSpeakerPosition[3 * 3 + 0] = -2;
+			m3dSpeakerPosition[3 * 3 + 1] = 0;
+			m3dSpeakerPosition[3 * 3 + 2] = -1;
+			break;
+		case 6:
+			m3dSpeakerPosition[0 * 3 + 0] = 2;
+			m3dSpeakerPosition[0 * 3 + 1] = 0;
+			m3dSpeakerPosition[0 * 3 + 2] = 1;
+			m3dSpeakerPosition[1 * 3 + 0] = -2;
+			m3dSpeakerPosition[1 * 3 + 1] = 0;
+			m3dSpeakerPosition[1 * 3 + 2] = 1;
 
-		// center and subwoofer.
-		m3dSpeakerPosition[2 * 3 + 0] = 0;
-		m3dSpeakerPosition[2 * 3 + 1] = 0;
-		m3dSpeakerPosition[2 * 3 + 2] = 1;
-		// Sub should be "mix of everything". We'll handle it as a special case and make it a null vector.
-		m3dSpeakerPosition[3 * 3 + 0] = 0;
-		m3dSpeakerPosition[3 * 3 + 1] = 0;
-		m3dSpeakerPosition[3 * 3 + 2] = 0;
+			// center and subwoofer.
+			m3dSpeakerPosition[2 * 3 + 0] = 0;
+			m3dSpeakerPosition[2 * 3 + 1] = 0;
+			m3dSpeakerPosition[2 * 3 + 2] = 1;
+			// Sub should be "mix of everything". We'll handle it as a special case and make it a null vector.
+			m3dSpeakerPosition[3 * 3 + 0] = 0;
+			m3dSpeakerPosition[3 * 3 + 1] = 0;
+			m3dSpeakerPosition[3 * 3 + 2] = 0;
 
-		// I suppose technically the second pair should be straight left & right,
-		// but I prefer moving them a bit back to mirror the front speakers.
-		m3dSpeakerPosition[4 * 3 + 0] = 2;
-		m3dSpeakerPosition[4 * 3 + 1] = 0;
-		m3dSpeakerPosition[4 * 3 + 2] = -1;
-		m3dSpeakerPosition[5 * 3 + 0] = -2;
-		m3dSpeakerPosition[5 * 3 + 1] = 0;
-		m3dSpeakerPosition[5 * 3 + 2] = -1;
-		break;
-	case 8:
-		m3dSpeakerPosition[0 * 3 + 0] = 2;
-		m3dSpeakerPosition[0 * 3 + 1] = 0;
-		m3dSpeakerPosition[0 * 3 + 2] = 1;
-		m3dSpeakerPosition[1 * 3 + 0] = -2;
-		m3dSpeakerPosition[1 * 3 + 1] = 0;
-		m3dSpeakerPosition[1 * 3 + 2] = 1;
+			// I suppose technically the second pair should be straight left & right,
+			// but I prefer moving them a bit back to mirror the front speakers.
+			m3dSpeakerPosition[4 * 3 + 0] = 2;
+			m3dSpeakerPosition[4 * 3 + 1] = 0;
+			m3dSpeakerPosition[4 * 3 + 2] = -1;
+			m3dSpeakerPosition[5 * 3 + 0] = -2;
+			m3dSpeakerPosition[5 * 3 + 1] = 0;
+			m3dSpeakerPosition[5 * 3 + 2] = -1;
+			break;
+		case 8:
+			m3dSpeakerPosition[0 * 3 + 0] = 2;
+			m3dSpeakerPosition[0 * 3 + 1] = 0;
+			m3dSpeakerPosition[0 * 3 + 2] = 1;
+			m3dSpeakerPosition[1 * 3 + 0] = -2;
+			m3dSpeakerPosition[1 * 3 + 1] = 0;
+			m3dSpeakerPosition[1 * 3 + 2] = 1;
 
-		// center and subwoofer.
-		m3dSpeakerPosition[2 * 3 + 0] = 0;
-		m3dSpeakerPosition[2 * 3 + 1] = 0;
-		m3dSpeakerPosition[2 * 3 + 2] = 1;
-		// Sub should be "mix of everything". We'll handle it as a special case and make it a null vector.
-		m3dSpeakerPosition[3 * 3 + 0] = 0;
-		m3dSpeakerPosition[3 * 3 + 1] = 0;
-		m3dSpeakerPosition[3 * 3 + 2] = 0;
+			// center and subwoofer.
+			m3dSpeakerPosition[2 * 3 + 0] = 0;
+			m3dSpeakerPosition[2 * 3 + 1] = 0;
+			m3dSpeakerPosition[2 * 3 + 2] = 1;
+			// Sub should be "mix of everything". We'll handle it as a special case and make it a null vector.
+			m3dSpeakerPosition[3 * 3 + 0] = 0;
+			m3dSpeakerPosition[3 * 3 + 1] = 0;
+			m3dSpeakerPosition[3 * 3 + 2] = 0;
 
-		// side
-		m3dSpeakerPosition[4 * 3 + 0] = 2;
-		m3dSpeakerPosition[4 * 3 + 1] = 0;
-		m3dSpeakerPosition[4 * 3 + 2] = 0;
-		m3dSpeakerPosition[5 * 3 + 0] = -2;
-		m3dSpeakerPosition[5 * 3 + 1] = 0;
-		m3dSpeakerPosition[5 * 3 + 2] = 0;
+			// side
+			m3dSpeakerPosition[4 * 3 + 0] = 2;
+			m3dSpeakerPosition[4 * 3 + 1] = 0;
+			m3dSpeakerPosition[4 * 3 + 2] = 0;
+			m3dSpeakerPosition[5 * 3 + 0] = -2;
+			m3dSpeakerPosition[5 * 3 + 1] = 0;
+			m3dSpeakerPosition[5 * 3 + 2] = 0;
 
-		// back
-		m3dSpeakerPosition[6 * 3 + 0] = 2;
-		m3dSpeakerPosition[6 * 3 + 1] = 0;
-		m3dSpeakerPosition[6 * 3 + 2] = -1;
-		m3dSpeakerPosition[7 * 3 + 0] = -2;
-		m3dSpeakerPosition[7 * 3 + 1] = 0;
-		m3dSpeakerPosition[7 * 3 + 2] = -1;
-		break;
+			// back
+			m3dSpeakerPosition[6 * 3 + 0] = 2;
+			m3dSpeakerPosition[6 * 3 + 1] = 0;
+			m3dSpeakerPosition[6 * 3 + 2] = -1;
+			m3dSpeakerPosition[7 * 3 + 0] = -2;
+			m3dSpeakerPosition[7 * 3 + 1] = 0;
+			m3dSpeakerPosition[7 * 3 + 2] = -1;
+			break;
+		}
 	}
+	unlockAudioMutex_internal();
 }
 
 const char *Soloud::getErrorString(result aErrorCode) const

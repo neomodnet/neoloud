@@ -88,7 +88,6 @@ struct SDL3Data
 
 	struct
 	{
-		unsigned int flags{Soloud::CLIP_ROUNDOFF};
 		unsigned int samplerate{Soloud::AUTO};
 		unsigned int bufferSize{Soloud::AUTO};
 		unsigned int channels{2};
@@ -124,6 +123,7 @@ struct SDL3Data
 	bool weInitSDLAudio{false};
 	bool streamInitialized{false};
 	bool deviceInitialized{false};
+	bool paused{false}; // stopped through pause(), as opposed to a device switch in progress
 };
 
 #if SDL_VERSION_ATLEAST(3, 3, 0)
@@ -253,6 +253,7 @@ result soloud_sdl3_pause(SoLoud::Soloud *aSoloud)
 				return UNKNOWN_ERROR;
 			}
 			data->deviceValid.store(false);
+			data->paused = true;
 		}
 	}
 	return SO_NO_ERROR;
@@ -272,6 +273,7 @@ result soloud_sdl3_resume(SoLoud::Soloud *aSoloud)
 				return UNKNOWN_ERROR;
 			}
 			data->deviceValid.store(true);
+			data->paused = false;
 		}
 	}
 	return SO_NO_ERROR;
@@ -680,17 +682,18 @@ result sdl3_set_device(Soloud *aSoloud, const char *deviceIdentifier)
 		             newSampleRate, newChannels, newBufferSize);
 
 		// update SoLoud's internal configuration
-		aSoloud->postinit_internal(newSampleRate, newBufferSize, data->initParams.flags, newChannels);
+		aSoloud->postinit_internal(newSampleRate, newBufferSize, newChannels);
 	}
 
-	// start the new device
-	if (!SDL_ResumeAudioDevice(data->deviceID))
+	// a freshly opened device plays, so a paused engine has to stay paused on it explicitly; resume() starts it
+	if (!(data->paused ? SDL_PauseAudioDevice(data->deviceID) : SDL_ResumeAudioDevice(data->deviceID)))
 	{
-		SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Failed to start new audio device: %s", SDL_GetError());
+		SDL_LogError(SDL_LOG_CATEGORY_AUDIO, "Failed to %s new audio device: %s", data->paused ? "pause" : "start", SDL_GetError());
 		return UNKNOWN_ERROR;
 	}
 
-	data->deviceValid.store(true);
+	if (!data->paused)
+		data->deviceValid.store(true);
 
 	SDL_LogInfo(SDL_LOG_CATEGORY_AUDIO, "Successfully switched to device: %s", data->currentDeviceInfo.name.data());
 	return SO_NO_ERROR;
@@ -724,7 +727,7 @@ result sdl3_enumerate_devices(Soloud *aSoloud)
 	return fill_device_list(aSoloud);
 }
 
-result sdl3_init(SoLoud::Soloud *aSoloud, unsigned int aFlags /*Soloud::CLIP_ROUNDOFF*/, unsigned int aSamplerate /*Soloud::AUTO (0)*/,
+result sdl3_init(SoLoud::Soloud *aSoloud, unsigned int /*aFlags, Soloud::CLIP_ROUNDOFF*/, unsigned int aSamplerate /*Soloud::AUTO (0)*/,
                  unsigned int aBuffer /*Soloud::AUTO (0)*/, unsigned int aChannels /*2*/)
 {
 	if (!aSoloud)
@@ -736,7 +739,6 @@ result sdl3_init(SoLoud::Soloud *aSoloud, unsigned int aFlags /*Soloud::CLIP_ROU
 
 	// save starting parameters (for later implementing device switching)
 	data->initParams = {
-	    .flags = aFlags,
 	    .samplerate = aSamplerate,
 	    .bufferSize = aBuffer,
 	    .channels = aChannels,
@@ -813,7 +815,7 @@ result sdl3_init(SoLoud::Soloud *aSoloud, unsigned int aFlags /*Soloud::CLIP_ROU
 	}
 
 	// initialize SoLoud with our configuration
-	aSoloud->postinit_internal(data->streamSpec.freq, actualDeviceFrames, aFlags, data->streamSpec.channels);
+	aSoloud->postinit_internal(data->streamSpec.freq, actualDeviceFrames, data->streamSpec.channels);
 
 	data->soloudInitialized.store(true);
 

@@ -762,24 +762,45 @@ result miniaudio_set_device(Soloud *aSoloud, const char *deviceIdentifier)
 	if (!data || !data->contextInitialized)
 		return INVALID_PARAMETER;
 
+	// lock device mutex
+	// miniaudio will internally block until the data callback is done, we don't have to lock the soloud internal audio mutex
+	std::lock_guard<std::mutex> deviceLock(data->deviceMutex);
+
+	// no identifier means the default device (in shared mode, which is what parse_share_mode_from_identifier returns for it)
+	const bool targetIsDefault = (!deviceIdentifier || strlen(deviceIdentifier) == 0);
 	ma_device_id *targetDeviceId = nullptr;
-	ma_share_mode targetShareMode = ma_share_mode_shared;
+	ma_share_mode targetShareMode = parse_share_mode_from_identifier(deviceIdentifier);
 
-	// handle default device case
-	if (!deviceIdentifier || strlen(deviceIdentifier) == 0)
-	{
-		targetDeviceId = nullptr; // use default device
-		targetShareMode = ma_share_mode_shared;
-	}
-	else
-	{
-		// parse share mode from identifier
-		targetShareMode = parse_share_mode_from_identifier(deviceIdentifier);
-
-		// get base identifier for device matching
-		std::array<char, 256> baseIdentifier{};
+	// get base identifier for device matching
+	std::array<char, 256> baseIdentifier{};
+	if (!targetIsDefault)
 		get_base_identifier(deviceIdentifier, baseIdentifier.data(), baseIdentifier.size());
 
+	// asking for the device we're already on (in the same share mode) is a no-op, unless that device stopped on its own: reopening it is the
+	// recovery path (see isDeviceLost())
+	if (data->deviceInitialized && (data->paused || !SL_MA_DEVICE_STOPPED(data->device)) && data->device.playback.shareMode == targetShareMode)
+	{
+		bool onTarget = false;
+		if (targetIsDefault)
+			onTarget = (data->device.playback.pID == nullptr); // opened as the default device, so it also follows default changes
+		else if (data->hasCurrentDeviceInfo)
+		{
+			DeviceInfo currentInfo{};
+			convert_device_info(&data->currentDeviceInfo, &currentInfo, ma_share_mode_shared, data->currentBackend);
+			std::array<char, 256> currentBaseIdentifier{};
+			get_base_identifier(currentInfo.identifier.data(), currentBaseIdentifier.data(), currentBaseIdentifier.size());
+			onTarget = (currentBaseIdentifier == baseIdentifier);
+		}
+		if (onTarget)
+		{
+			if (data->maxLogLevel >= MA_LOG_LEVEL_INFO)
+				SoLoud::logStdout("[MiniAudio INFO] Already using the requested device\n");
+			return SO_NO_ERROR;
+		}
+	}
+
+	if (!targetIsDefault)
+	{
 		// enumerate devices to find matching identifier
 		ma_device_info *maDevices = nullptr;
 		ma_uint32 maDeviceCount = 0;
@@ -808,10 +829,6 @@ result miniaudio_set_device(Soloud *aSoloud, const char *deviceIdentifier)
 			return INVALID_PARAMETER;
 	}
 
-	// lock device mutex
-	// miniaudio will internally block until the data callback is done, we don't have to lock the soloud internal audio mutex
-	std::lock_guard<std::mutex> deviceLock(data->deviceMutex);
-
 	// store current configuration
 	unsigned int oldSampleRate = data->deviceInitialized ? data->device.sampleRate : 0;
 	unsigned int oldBufferSize = data->deviceInitialized ? data->device.playback.internalPeriodSizeInFrames : 0;
@@ -836,10 +853,6 @@ result miniaudio_set_device(Soloud *aSoloud, const char *deviceIdentifier)
 		return UNKNOWN_ERROR;
 	}
 
-	// update current device info
-	ma_result deviceInfoResult = ma_context_get_device_info(&data->context, ma_device_type_playback, data->device.playback.pID, &data->currentDeviceInfo);
-	data->hasCurrentDeviceInfo = (deviceInfoResult == MA_SUCCESS);
-
 	// check if device configuration changed
 	unsigned int newSampleRate = data->device.sampleRate;
 	unsigned int newBufferSize = data->device.playback.internalPeriodSizeInFrames;
@@ -855,21 +868,27 @@ result miniaudio_set_device(Soloud *aSoloud, const char *deviceIdentifier)
 			                  newSampleRate, newChannels, newBufferSize);
 		}
 		// update SoLoud's internal configuration
-		aSoloud->postinit_internal(newSampleRate, newBufferSize, data->initFlags, newChannels);
+		aSoloud->postinit_internal(newSampleRate, newBufferSize, newChannels);
 	}
 
-	// start the new device
-	result = ma_device_start(&data->device);
-	if (result != MA_SUCCESS)
+	// start the new device; a paused engine stays paused on it, resume() starts it
+	if (!data->paused)
 	{
-		if (data->maxLogLevel >= MA_LOG_LEVEL_ERROR)
-			SoLoud::logStdout("[MiniAudio ERROR] Failed to start new device\n");
+		result = ma_device_start(&data->device);
+		if (result != MA_SUCCESS)
+		{
+			if (data->maxLogLevel >= MA_LOG_LEVEL_ERROR)
+				SoLoud::logStdout("[MiniAudio ERROR] Failed to start new device\n");
 
-		return UNKNOWN_ERROR;
+			return UNKNOWN_ERROR;
+		}
+
+		data->deviceValid.store(true);
 	}
 
-	data->deviceValid.store(true);
-	data->paused = false;
+	// update current device info; it's only informational, so this runs once the new device is playing rather than while nothing is
+	ma_result deviceInfoResult = ma_context_get_device_info(&data->context, ma_device_type_playback, data->device.playback.pID, &data->currentDeviceInfo);
+	data->hasCurrentDeviceInfo = (deviceInfoResult == MA_SUCCESS);
 
 	if (data->maxLogLevel >= MA_LOG_LEVEL_INFO)
 		SoLoud::logStdout("[MiniAudio INFO] Successfully switched to new device in %s mode\n", targetShareMode == ma_share_mode_exclusive ? "exclusive" : "shared");
@@ -1045,7 +1064,7 @@ result miniaudio_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSample
 	unsigned int actualBufferSize = data->device.playback.internalPeriodSizeInFrames;
 	unsigned int actualChannels = data->device.playback.channels;
 
-	aSoloud->postinit_internal(actualSampleRate, actualBufferSize, aFlags, actualChannels);
+	aSoloud->postinit_internal(actualSampleRate, actualBufferSize, actualChannels);
 	data->soloudInitialized.store(true);
 
 	aSoloud->mBackendCleanupFunc = soloud_miniaudio_deinit;

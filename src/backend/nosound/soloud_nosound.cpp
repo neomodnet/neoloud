@@ -82,7 +82,7 @@ static void nosoundCleanup(Soloud *aSoloud)
 	aSoloud->mBackendData = nullptr;
 }
 
-result nosound_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSamplerate, unsigned int aBuffer, unsigned int aChannels)
+result nosound_init(Soloud *aSoloud, unsigned int /*aFlags*/, unsigned int aSamplerate, unsigned int aBuffer, unsigned int aChannels)
 {
 	SoLoudNosoundData *data = new SoLoudNosoundData;
 	aSoloud->mBackendData = data;
@@ -92,7 +92,7 @@ result nosound_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSamplera
 	data->mSoloud = aSoloud;
 	data->mBuffer.init(data->mSamples * aChannels);
 	data->mRunning = true;
-	aSoloud->postinit_internal(aSamplerate, data->mSamples * aChannels, aFlags, aChannels);
+	aSoloud->postinit_internal(aSamplerate, data->mSamples * aChannels, aChannels);
 	data->mThreadHandle = Thread::createThread(nosoundThread, data);
 	if (nullptr == data->mThreadHandle)
 	{

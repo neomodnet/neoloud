@@ -688,7 +688,7 @@ public:
 	// Implementation details exposed for output backends.
 
 	// Handle rest of initialization (called from backend)
-	void postinit_internal(unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aFlags, unsigned int aChannels);
+	void postinit_internal(unsigned int aSamplerate, unsigned int aBufferSize, unsigned int aChannels);
 
 	// Returns mixed float samples in buffer. Called by the back-end, or user with null driver. Any number of samples is fine.
 	void mix(void *aBuffer, unsigned int aSamples, mixing::SAMPLE_FORMAT aFormat = mixing::SAMPLE_FLOAT32);
