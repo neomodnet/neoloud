@@ -92,8 +92,8 @@ public:
 	// The phase vocoder's analysis block length and the interval between blocks. The block sets how finely the spectrum is resolved and how
 	// much time each block averages (longer blocks warble on moving pitch), the interval how often a block is taken (the input is walked at
 	// interval * tempo, so higher tempos see fewer blocks per source frame); the cost scales with block / interval
-	static constexpr double BLOCK_SECONDS = 0.06;
-	static constexpr double INTERVAL_SECONDS = 0.01;
+	static constexpr double BLOCK_SECONDS = 0.12;
+	static constexpr double INTERVAL_SECONDS = 0.03;
 
 private:
 	class Engine;
