@@ -153,9 +153,9 @@ private:
 // WSOLA with the source's onsets anchored. The output is a chain of source sequences crossfaded into each other. A normal sequence starts at
 // whichever source position within the search window around the nominal one best continues the previous sequence's waveform, so what plays
 // between seams is the source's own waveform. The sequence holding an onset is played 1:1 and placed so that the onset lands on its nominal
-// output time; onsets come from the detector, and from the loop wraps and the end the stage announces. Sequences are scheduled on the
-// engine's own output timeline, so the output doesn't depend on how it is pulled. Everything is allocated in the constructor, except that
-// the source ring grows when the tempo rises past what it was sized for.
+// output time, its start searched the same way within a small slack of that; onsets come from the detector, and from the loop wraps and the
+// end the stage announces. Sequences are scheduled on the engine's own output timeline, so the output doesn't depend on how it is pulled.
+// Everything is allocated in the constructor, except that the source ring grows when the tempo rises past what it was sized for.
 class TimeStretcher::WsolaEngine final : public TimeStretcher::Engine
 {
 public:
@@ -184,13 +184,15 @@ private:
 	// an anchored sequence runs 1:1 from PRE before its onset (at least the crossfade, so that the crossfade is over before the onset) to POST
 	// after it, cut short only to hand over to the next onset's own sequence; the sequence before it takes a hop of up to MAX_HOP so as to start
 	// it PRE_TARGET before the onset; the time the 1:1 region puts the content off the nominal position is worked off over REPAY
-	static constexpr double PRE_MIN_SECONDS = 0.007;
 	static constexpr double PRE_TARGET_SECONDS = 0.010;
 	static constexpr double PRE_MAX_SECONDS = 0.014;
 	static constexpr double POST_SECONDS = 0.025;
 	static constexpr double POST_MIN_SECONDS = 0.004;
 	static constexpr double MAX_HOP_SECONDS = 0.0135;
 	static constexpr double REPAY_SECONDS = 0.1;
+	// an anchored sequence starts wherever within ANCHOR_SLACK of putting its onset on time best continues the previous sequence (but no later
+	// than leaves the crossfade before the onset): a sustained tone can only be joined in phase if the join may move by half its period
+	static constexpr double ANCHOR_SLACK_SECONDS = 0.0025;
 	// no sequence plays this close to an onset it doesn't hold
 	static constexpr double ONSET_MARGIN_SECONDS = 0.001;
 	// source frames fed beyond what can be needed, for the rounding of the stage's feeds
@@ -201,14 +203,16 @@ private:
 	// MAX_HZ. A frame's flux is how much louder its bins are than two hops earlier, on a log scale, ignoring what a slight shift in frequency
 	// explains. A flux peak (over PEAK_FRAMES either side) that stands above the mean of the PAST_FRAMES before it and the PEAK_FRAMES after
 	// by THRESHOLD of the flux's recent maximum (decaying over SCALE_SECONDS) is an onset, placed at the sample where the level of the audio
-	// up to it is halfway through its steepest rise (ENVELOPE and SLOPE long respectively). Onsets closer than MIN_GAP count as one.
+	// up to it is halfway through its steepest rise (ENVELOPE and SLOPE long respectively). Onsets closer than MIN_GAP count as one. Every
+	// anchor costs a join that can't be searched as freely as the others, so the threshold only lets through the onsets worth one (in a dense
+	// mix the drums, not every syllable).
 	static constexpr double WINDOW_SECONDS = 0.018;
 	static constexpr double MAX_HZ = 16000.0;
 	static constexpr float LOG_GAIN = 500.0f;
 	static constexpr unsigned int PEAK_FRAMES = 3;
 	static constexpr unsigned int PAST_FRAMES = 8;
 	static constexpr unsigned int FLUX_FRAMES = PAST_FRAMES + PEAK_FRAMES + 1;
-	static constexpr double THRESHOLD = 0.06;
+	static constexpr double THRESHOLD = 0.3;
 	static constexpr double SCALE_SECONDS = 2.0;
 	static constexpr double MIN_GAP_SECONDS = 0.02;
 	static constexpr double ENVELOPE_SECONDS = 0.001;
@@ -230,7 +234,9 @@ private:
 	void addOnset(idx aSource);
 	[[nodiscard]] bool onsetIn(idx aFrom, idx aTo) const;
 	void commit();
-	[[nodiscard]] idx search(idx aCentre, idx aLength, idx aAnchoredHead);
+	// the source start from aFrom to aTo for a sequence aLength long that best continues the previous one, aCentre being the middle of the
+	// window (which aTo may cut short); it may play no onset but aHeld (none when negative)
+	[[nodiscard]] idx search(idx aFrom, idx aCentre, idx aTo, idx aLength, idx aHeld);
 	void write(idx aStart, idx aSource, idx aLength, bool aFadeHead);
 
 	const unsigned int mChannels;
@@ -238,13 +244,13 @@ private:
 	const idx mHop;
 	const idx mOverlap;
 	const idx mHalfSeek;
-	const idx mPreMin;
 	const idx mPreTarget;
 	const idx mPreMax;
 	const idx mPost;
 	const idx mPostMin;
 	const idx mMaxHop;
 	const idx mRepay;
+	const idx mSlack;
 	const idx mMargin;
 	const idx mMaxLength; // of a sequence
 	const idx mMinGap;
@@ -286,15 +292,13 @@ private:
 	const unsigned int mSlopeFrames;
 	AlignedFloatBuffer mMono;
 	AlignedFloatBuffer mEnvelope;
-	// search scratch: the candidates' source, contiguous per channel, the two references, and the per-candidate correlations and energies
+	// search scratch: the candidates' heads, contiguous per channel, the previous sequence's tail, and the per-candidate correlations and
+	// energies
 	const unsigned int mSearchFrames;
 	AlignedFloatBuffer mSearch;
 	AlignedFloatBuffer mReference;
-	AlignedFloatBuffer mReference2;
 	AlignedFloatBuffer mScore;
-	AlignedFloatBuffer mScore2;
 	AlignedFloatBuffer mEnergy;
-	AlignedFloatBuffer mEnergy2;
 };
 
 TimeStretcher::WsolaEngine::WsolaEngine(unsigned int aChannels, float aSamplerate)
@@ -302,13 +306,13 @@ TimeStretcher::WsolaEngine::WsolaEngine(unsigned int aChannels, float aSamplerat
       mHop(frames(HOP_SECONDS, aSamplerate)),
       mOverlap(frames(OVERLAP_SECONDS, aSamplerate)),
       mHalfSeek(frames(SEEK_SECONDS, aSamplerate) / 2),
-      mPreMin(frames(PRE_MIN_SECONDS, aSamplerate)),
       mPreTarget(frames(PRE_TARGET_SECONDS, aSamplerate)),
       mPreMax(frames(PRE_MAX_SECONDS, aSamplerate)),
       mPost(frames(POST_SECONDS, aSamplerate)),
       mPostMin(frames(POST_MIN_SECONDS, aSamplerate)),
       mMaxHop(frames(MAX_HOP_SECONDS, aSamplerate)),
       mRepay(frames(REPAY_SECONDS, aSamplerate)),
+      mSlack(frames(ANCHOR_SLACK_SECONDS, aSamplerate)),
       mMargin(frames(ONSET_MARGIN_SECONDS, aSamplerate)),
       mMaxLength(mPreMax + mPost + mHop + mOverlap),
       mMinGap(frames(MIN_GAP_SECONDS, aSamplerate)),
@@ -329,14 +333,11 @@ TimeStretcher::WsolaEngine::WsolaEngine(unsigned int aChannels, float aSamplerat
       mSlopeFrames(frames(SLOPE_SECONDS, aSamplerate)),
       mMono(mWindow / 2 + 2 * mAnalysisHop + mSlopeFrames + mEnvelopeFrames + 1),
       mEnvelope(mWindow / 2 + 2 * mAnalysisHop + mSlopeFrames + 1),
-      mSearchFrames(2 * (unsigned int)mHalfSeek + (unsigned int)mMaxLength),
+      mSearchFrames(2 * (unsigned int)mHalfSeek + (unsigned int)mOverlap),
       mSearch(mSearchFrames * aChannels),
       mReference((unsigned int)mOverlap * aChannels),
-      mReference2((unsigned int)mOverlap * aChannels),
       mScore(2 * (unsigned int)mHalfSeek + 1),
-      mScore2(2 * (unsigned int)mHalfSeek + 1),
-      mEnergy(2 * (unsigned int)mHalfSeek + 1),
-      mEnergy2(2 * (unsigned int)mHalfSeek + 1)
+      mEnergy(2 * (unsigned int)mHalfSeek + 1)
 {
 	mLogMagnitude.clear();
 	for (unsigned int j = 0; j < mOverlap; j++)
@@ -618,7 +619,6 @@ void TimeStretcher::WsolaEngine::commit()
 		if (distance > mPreMax)
 			break;
 		const idx pre = distance;
-		source = onset - pre;
 		length = pre + mPost + mOverlap;
 		if (mNextOnset + 1 < mOnsetCount)
 		{
@@ -629,6 +629,8 @@ void TimeStretcher::WsolaEngine::commit()
 			if (lo <= hi)
 				length = std::clamp(next - mPreTarget, lo, hi) - start + mOverlap;
 		}
+		const idx onTime = onset - pre;
+		source = mFirst ? onTime : search(onTime - mSlack, onTime, std::min(onTime + mSlack, onset - mOverlap), length, onset);
 		anchored = true;
 		mNextOnset++;
 		break;
@@ -637,22 +639,16 @@ void TimeStretcher::WsolaEngine::commit()
 	{
 		// a normal sequence, its hop chosen so that the next sequence starts where the next onset wants its anchored one to
 		idx hop = mHop;
-		idx anchoredHead = -1;
 		if (mNextOnset < mOnsetCount)
 		{
-			const idx onset = mOnsets[mNextOnset];
-			const idx want = outputTimeOf(onset) - mPreTarget - start;
+			const idx want = outputTimeOf(mOnsets[mNextOnset]) - mPreTarget - start;
 			if (want <= mMaxHop)
-			{
 				hop = std::clamp(want, mOverlap, mMaxHop);
-				const idx distance = outputTimeOf(onset) - (start + hop);
-				if (distance >= mOverlap && distance <= mPreMax)
-					anchoredHead = onset - distance;
-			}
 		}
 		length = hop + mOverlap;
 		const double debt = mDebt * std::max(0.0, 1.0 - (double)(start - mDebtFrom) / (double)mRepay);
-		source = mFirst ? 0 : search(std::llround(mNominal + debt), length, anchoredHead);
+		const idx centre = std::llround(mNominal + debt);
+		source = mFirst ? 0 : search(centre - mHalfSeek, centre, centre + mHalfSeek, length, -1);
 	}
 	write(start, source, length, !mFirst);
 	const idx advance = length - mOverlap;
@@ -668,87 +664,66 @@ void TimeStretcher::WsolaEngine::commit()
 	mFirst = false;
 }
 
-idx TimeStretcher::WsolaEngine::search(idx aCentre, idx aLength, idx aAnchoredHead)
+idx TimeStretcher::WsolaEngine::search(idx aFrom, idx aCentre, idx aTo, idx aLength, idx aHeld)
 {
-	const unsigned int count = 2 * (unsigned int)mHalfSeek + 1;
-	const idx lo = aCentre - mHalfSeek;
-	const unsigned int span = count - 1 + (unsigned int)aLength;
+	const unsigned int count = (unsigned int)(aTo - aFrom) + 1;
 	const unsigned int overlap = (unsigned int)mOverlap;
-	const unsigned int tailOffset = (unsigned int)aLength - overlap;
-	const bool twoSided = aAnchoredHead >= 0;
+	const unsigned int span = count - 1 + overlap;
+	SOLOUD_ASSERT(span <= mSearchFrames);
 	for (unsigned int ch = 0; ch < mChannels; ch++)
 	{
 		float *window = lane(mSearch, ch, mSearchFrames);
 		for (unsigned int i = 0; i < span; i++)
-			window[i] = sourceAt(ch, lo + i);
+			window[i] = sourceAt(ch, aFrom + i);
 		float *reference = lane(mReference, ch, overlap);
-		float *reference2 = lane(mReference2, ch, overlap);
 		for (unsigned int i = 0; i < overlap; i++)
-		{
 			reference[i] = sourceAt(ch, mPrevSource + mPrevLength - overlap + i);
-			reference2[i] = twoSided ? sourceAt(ch, aAnchoredHead + i) : 0.0f;
-		}
 	}
 	// each candidate's correlation with the previous sequence's continuation over its first overlap frames, normalised by the candidate's
-	// energy there (the reference's is the same for all), plus the same between its last overlap frames and the anchored sequence's head when
-	// one follows
+	// energy there (the reference's is the same for all)
 	float *score = mScore.mData;
-	float *score2 = mScore2.mData;
 	float *energy = mEnergy.mData;
-	float *energy2 = mEnergy2.mData;
 	std::fill(score, score + count, 0.0f);
-	std::fill(score2, score2 + count, 0.0f);
 	std::fill(energy, energy + count, 0.0f);
-	std::fill(energy2, energy2 + count, 0.0f);
 	for (unsigned int ch = 0; ch < mChannels; ch++)
 	{
 		const float *window = lane(mSearch, ch, mSearchFrames);
 		correlate(window, lane(mReference, ch, overlap), score, overlap, count);
-		if (twoSided)
-			correlate(window + tailOffset, lane(mReference2, ch, overlap), score2, overlap, count);
 		double sum = 0.0;
-		double sum2 = 0.0;
 		for (unsigned int i = 0; i < overlap; i++)
-		{
 			sum += (double)window[i] * window[i];
-			sum2 += (double)window[tailOffset + i] * window[tailOffset + i];
-		}
 		energy[0] += (float)sum;
-		energy2[0] += (float)sum2;
 		for (unsigned int j = 1; j < count; j++)
 		{
 			sum += (double)window[j + overlap - 1] * window[j + overlap - 1] - (double)window[j - 1] * window[j - 1];
-			sum2 += (double)window[tailOffset + j + overlap - 1] * window[tailOffset + j + overlap - 1] -
-			        (double)window[tailOffset + j - 1] * window[tailOffset + j - 1];
 			energy[j] += (float)sum;
-			energy2[j] += (float)sum2;
 		}
 	}
 	double best = -std::numeric_limits<double>::infinity();
 	double bestAny = best;
-	unsigned int bestAt = (unsigned int)mHalfSeek;
+	unsigned int bestAt = (unsigned int)(aCentre - aFrom);
 	unsigned int bestAnyAt = bestAt;
 	for (unsigned int j = 0; j < count; j++)
 	{
-		double s = score[j] / std::sqrt(energy[j] + ENERGY_EPSILON) + SCORE_BIAS;
-		if (twoSided)
-			s += score2[j] / std::sqrt(energy2[j] + ENERGY_EPSILON) + SCORE_BIAS;
-		const double t = ((double)j - (double)mHalfSeek) / (double)mHalfSeek;
-		s *= 1.0 - CENTRE_BIAS * t * t;
+		const idx candidate = aFrom + j;
+		const double t = (double)(candidate - aCentre) / (double)(aCentre - aFrom);
+		const double s = (score[j] / std::sqrt(energy[j] + ENERGY_EPSILON) + SCORE_BIAS) * (1.0 - CENTRE_BIAS * t * t);
 		if (s > bestAny)
 		{
 			bestAny = s;
 			bestAnyAt = j;
 		}
 		// a candidate may not play an onset it doesn't hold (replaying one, or pre-playing the next), unless none can avoid it
-		const idx candidate = lo + j;
-		if (s > best && !onsetIn(candidate + overlap / 2 - mMargin, candidate + aLength - overlap / 2 + mMargin))
+		const idx playFrom = candidate + overlap / 2 - mMargin;
+		const idx playTo = candidate + aLength - overlap / 2 + mMargin;
+		const bool clear = aHeld < 0 ? !onsetIn(playFrom, playTo) : !onsetIn(playFrom, aHeld) && !onsetIn(aHeld + 1, playTo);
+		if (s > best && clear)
 		{
 			best = s;
 			bestAt = j;
 		}
 	}
-	return lo + (best > -std::numeric_limits<double>::infinity() ? bestAt : bestAnyAt);
+	return aFrom + (best > -std::numeric_limits<double>::infinity() ? bestAt : bestAnyAt);
 }
 
 void TimeStretcher::WsolaEngine::write(idx aStart, idx aSource, idx aLength, bool aFadeHead)

@@ -40,15 +40,15 @@ class AudioSourceInstance;
 // spans mTempo source frames. Engaged lazily by Soloud::setTempo and setPitchShift, see there for the threading contract.
 //
 // Two engines do the stretching: a tempo above 1.0 with no pitch shift uses a time-domain one (WSOLA, which copies stretches of the waveform
-// intact and anchors the source's onsets to their nominal output time), everything else a phase vocoder (smooth when slowing down, and the
-// one that shifts pitch). The engine is picked when the stage primes.
+// intact and anchors the source's distinct onsets to their nominal output time), everything else a phase vocoder (smooth when slowing down,
+// and the one that shifts pitch). The engine is picked when the stage primes.
 //
 // Before it produces anything the stage is primed with primeLength() source frames, which aligns its first output frame with the first
 // primed frame, so the voice's position needs no latency term. Priming happens in the audio thread's first produce() after the stage is engaged
 // or invalidated by a seek, so that it runs with the tempo in force then. The source frames the engine holds in flight are tracked as
 // mFed - mTempo * mProduced. The position the stage reports is the nominal one, mTempo source frames per output frame: the phase vocoder's
-// output sits within a few frames of it, the time-domain engine's onsets sit on it exactly and the material between them within its search
-// window of it.
+// output sits within a few frames of it, the time-domain engine's anchored onsets sit on it to within the slack it may move them by to keep
+// the join before them in phase (WsolaEngine::ANCHOR_SLACK_SECONDS) and the material between them within its search window of it.
 class TimeStretcher
 {
 public:

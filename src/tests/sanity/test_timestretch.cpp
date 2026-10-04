@@ -24,7 +24,8 @@ constexpr unsigned int IMPULSE_FRAMES = RATE * 12;
 constexpr float IMPULSE_THRESHOLD = 0.3f;
 // in source frames: the phase vocoder places a transient within a few output samples once it has settled, and within tens of them in the
 // first quarter second after it is primed (at play, and at every seek); the time-domain engine anchors an onset to the nearest output
-// frame, so within half a frame's worth of source
+// frame, so within half a frame's worth of source (the slack it may move an onset by, to join it in phase, has nothing to join to in the
+// silence before an impulse)
 constexpr double ALIGN_TOLERANCE = 24.0;
 constexpr double SETTLING_TOLERANCE = 64.0;
 constexpr double TIME_DOMAIN_TOLERANCE = 1.5;
