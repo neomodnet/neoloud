@@ -25,6 +25,7 @@ freely, subject to the following restrictions:
 
 #include "soloud_stb.h"
 
+#include "soloud_config.h"
 #include "stb_vorbis.h"
 
 namespace SoLoud
@@ -32,46 +33,13 @@ namespace SoLoud
 
 unsigned int STBDecoder::decodeOggFrames(float *buffer, unsigned int samplesToRead, unsigned int bufferSize, unsigned int channels)
 {
-	unsigned int totalSamples = 0;
+	// stb_vorbis hands out the rest of the frame it decoded last before decoding more (after a seek, from the target on)
+	float *outputs[MAX_CHANNELS];
+	for (unsigned int ch = 0; ch < channels; ch++)
+		outputs[ch] = buffer + ch * bufferSize;
 
-	while (totalSamples < samplesToRead)
-	{
-		// check if we need a new frame
-		if (mFrameOffset >= mFrameSize)
-		{
-			mFrameSize = stb_vorbis_get_frame_float(vorbis, nullptr, &mOutputs);
-			mFrameOffset = 0;
-
-			if (mFrameSize == 0)
-			{
-				mEnded = true;
-				break; // end of stream
-			}
-			else
-			{
-				mEnded = false;
-			}
-		}
-
-		// calculate how many samples we can copy from current frame
-		unsigned int samplesInFrame = mFrameSize - mFrameOffset;
-		unsigned int samplesToCopy = samplesToRead - totalSamples;
-		if (samplesToCopy > samplesInFrame)
-			samplesToCopy = samplesInFrame;
-
-		// copy samples with planar layout
-		for (unsigned int s = 0; s < samplesToCopy; s++)
-		{
-			for (unsigned int ch = 0; ch < channels; ch++)
-			{
-				buffer[ch * bufferSize + totalSamples + s] = mOutputs[ch][mFrameOffset + s];
-			}
-		}
-
-		totalSamples += samplesToCopy;
-		mFrameOffset += samplesToCopy;
-	}
-
-	return totalSamples;
+	unsigned int samplesRead = (unsigned int)stb_vorbis_get_samples_float(vorbis, (int)channels, outputs, (int)samplesToRead);
+	mEnded = samplesRead < samplesToRead;
+	return samplesRead;
 }
 } // namespace SoLoud

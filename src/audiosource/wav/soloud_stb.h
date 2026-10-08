@@ -36,10 +36,6 @@ struct STBDecoder
 	unsigned int decodeOggFrames(float *buffer, unsigned int samplesToRead, unsigned int bufferSize, unsigned int channels);
 
 	stb_vorbis *vorbis{nullptr};
-
-	unsigned int mFrameSize{0};
-	unsigned int mFrameOffset{0};
-	float **mOutputs{nullptr};
 	bool mEnded{false};
 };
 

@@ -360,12 +360,8 @@ result WavStreamInstance::seek(double aSeconds, float *mScratch, unsigned int mS
 
 		if (stb_vorbis_seek(mOgg->vorbis, pos) == 1)
 		{
-			// only reset frame state after successful seek
-			mOgg->mFrameSize = 0;
-			mOgg->mFrameOffset = 0;
-
-			// get actual position after seek (may not be exact)
-			mOffset = stb_vorbis_get_sample_offset(mOgg->vorbis);
+			// sample-exact: the next sample out is the target (stb_vorbis_get_sample_offset() is the end of the frame it decoded to get there)
+			mOffset = pos;
 			double newPosition = static_cast<double>(mOffset) / mBaseSamplerate;
 			mStreamPosition = newPosition;
 
@@ -428,12 +424,7 @@ result WavStreamInstance::rewind()
 	{
 	case WAVSTREAM_OGG: {
 		if (stb_vorbis_seek_start(mOgg->vorbis) == 1)
-		{
-			// only reset frame state after successful seek
-			mOgg->mFrameSize = 0;
-			mOgg->mFrameOffset = 0;
 			mOgg->mEnded = false;
-		}
 	}
 	break;
 	case WAVSTREAM_FLAC:
